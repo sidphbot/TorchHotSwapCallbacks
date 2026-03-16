@@ -11,6 +11,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..util import append_jsonl
@@ -262,6 +263,32 @@ async def cb_unload(cb_id: str, request: Request):
     cb_registry.pop(cb_id, None)
     request.app.state.cb_registry = cb_registry
     return {"status": "queued", "command": cmd}
+
+
+@router.post("/rollback")
+async def rollback(request: Request):
+    """Rollback to previous parameter state via snapshot stack."""
+    ms = getattr(request.app.state, "mutable_state", None)
+    if ms is None:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "detail": "No mutable state available"},
+        )
+    if not ms._snapshot_stack:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "detail": "Snapshot stack is empty"},
+        )
+    results = ms.rollback()
+    if results is None:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "detail": "Rollback failed"},
+        )
+    restored = {k: "ok" if v.success else v.error for k, v in results.items()}
+    # Also write a rollback command so the training kernel picks it up
+    _append(request, {"module": "opt", "op": "rollback"})
+    return {"status": "rolled_back", "restored": restored}
 
 
 @router.post("/freeze")

@@ -15,8 +15,10 @@ from .base import ApplyResult
 class MutableState:
     """Container of :class:`HotcbActuator` instances."""
 
-    def __init__(self, actuators: List[HotcbActuator]) -> None:
+    def __init__(self, actuators: List[HotcbActuator], max_snapshots: int = 10) -> None:
         self._actuators: Dict[str, HotcbActuator] = {a.param_key: a for a in actuators}
+        self._snapshot_stack: List[dict] = []
+        self._max_snapshots = max_snapshots
 
     # ------------------------------------------------------------------
     # Lookup helpers
@@ -39,7 +41,14 @@ class MutableState:
     # ------------------------------------------------------------------
 
     def apply(self, key: str, value: Any, env: dict, step: int) -> ApplyResult:
-        """Validate -> apply_fn -> record mutation -> transition state."""
+        """Validate -> apply_fn -> record mutation -> transition state.
+
+        Automatically pushes a snapshot before applying so that rollback()
+        can restore the previous state.
+        """
+        # Push snapshot before mutation
+        self._push_snapshot()
+
         act = self._actuators.get(key)
         if act is None:
             return ApplyResult(success=False, error=f"unknown_param:{key}")
@@ -65,6 +74,33 @@ class MutableState:
             act.state = ActuatorState.UNVERIFIED
 
         return result
+
+    # ------------------------------------------------------------------
+    # Snapshot stack helpers
+    # ------------------------------------------------------------------
+
+    def _push_snapshot(self) -> None:
+        """Push current state onto the snapshot stack (capped at max_snapshots)."""
+        snap = self.snapshot_all()
+        self._snapshot_stack.append(snap)
+        if len(self._snapshot_stack) > self._max_snapshots:
+            self._snapshot_stack = self._snapshot_stack[-self._max_snapshots:]
+
+    def rollback(self, n: int = 1, env: Optional[dict] = None) -> Optional[Dict[str, ApplyResult]]:
+        """Pop n snapshots and restore the last one.
+
+        Returns restore results, or None if the stack is empty.
+        """
+        if not self._snapshot_stack:
+            return None
+        if env is None:
+            env = {}
+        snapshot = None
+        for _ in range(min(n, len(self._snapshot_stack))):
+            snapshot = self._snapshot_stack.pop()
+        if snapshot is None:
+            return None
+        return self.restore_all(snapshot, env)
 
     # ------------------------------------------------------------------
     # Lifecycle
