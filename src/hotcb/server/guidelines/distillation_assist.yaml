@@ -1,0 +1,66 @@
+name: distillation_assist
+description: Policy pack for knowledge distillation training
+version: "1.0"
+requires: []
+rules:
+  - id: summary_first_warmup
+    condition: custom
+    metric: step
+    params:
+      expression: "step < 200"
+    action:
+      module: loss
+      op: set_params
+      params:
+        distill_weight: 0.9
+    confidence: medium
+    priority: medium
+    cooldown: 50
+    description: "Prioritize distillation loss during early training"
+
+  - id: spatial_delayed_ramp
+    condition: custom
+    metric: step
+    params:
+      expression: "step > 500"
+    action:
+      module: loss
+      op: set_params
+      params:
+        spatial_weight: 0.5
+    confidence: low
+    priority: low
+    cooldown: 100
+    description: "Ramp up spatial loss after initial convergence"
+
+  - id: feature_health_check
+    condition: custom
+    metric: feature_loss
+    params:
+      expression: "feature_loss > 5.0"
+    action:
+      module: opt
+      op: set_params
+      params:
+        lr_mult: 0.5
+    confidence: high
+    priority: high
+    cooldown: 50
+    description: "Reduce LR when feature distillation loss is unhealthy"
+    rollback_if:
+      no_improvement_after: 300
+
+  - id: temperature_guard
+    condition: custom
+    metric: distill_loss
+    params:
+      expression: "distill_loss > 20.0"
+    action:
+      module: loss
+      op: set_params
+      params:
+        distill_weight: 0.3
+    confidence: high
+    priority: high
+    cooldown: 100
+    description: "Reduce distillation weight if distillation loss diverges"

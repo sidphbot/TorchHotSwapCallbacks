@@ -1,0 +1,74 @@
+name: plateau_recovery
+description: Strategies for recovering from training plateaus
+version: "1.0"
+requires: []
+rules:
+  - id: stagnation_detect
+    condition: plateau
+    metric: train_loss
+    params:
+      window: 25
+      epsilon: 0.002
+      cooldown: 50
+    action:
+      module: opt
+      op: set_params
+      params:
+        lr_mult: 0.5
+    confidence: high
+    priority: high
+    description: "Detect stagnation and reduce LR when train loss plateaus for 25 steps"
+
+  - id: cosine_restart
+    condition: plateau
+    metric: val_loss
+    params:
+      window: 30
+      epsilon: 0.003
+      cooldown: 80
+    action:
+      module: opt
+      op: set_params
+      params:
+        lr_mult: 2.0
+    confidence: medium
+    priority: medium
+    description: "Warm restart (2x LR) when validation loss plateaus for 30 steps"
+    bounds:
+      max: 0.01
+    rollback_if:
+      no_improvement_after: 100
+
+  - id: aux_emphasis_shift
+    condition: plateau
+    metric: train_loss
+    params:
+      window: 20
+      epsilon: 0.001
+      cooldown: 60
+    action:
+      module: loss
+      op: set_params
+      params:
+        aux_weight: 0.8
+    confidence: low
+    priority: low
+    description: "Increase aux weight to break plateau via auxiliary gradients"
+
+  - id: conservative_finish
+    condition: plateau
+    metric: val_loss
+    params:
+      window: 40
+      epsilon: 0.001
+      cooldown: 200
+    action:
+      module: opt
+      op: set_params
+      params:
+        lr_mult: 0.1
+    confidence: high
+    priority: high
+    description: "Aggressive LR reduction for late-stage plateaus (40-step window)"
+    suppress_rules:
+      - "plateau_recovery.cosine_restart"
