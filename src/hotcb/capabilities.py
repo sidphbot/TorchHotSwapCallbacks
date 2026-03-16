@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,11 @@ class TrainingCapabilities:
     grad_clip_value: Optional[float] = None  # None = not configured
     grad_clip_wired: bool = False  # True only if hotcb can actually modify it
     metric_names: Tuple[str, ...] = ()
+    # Phase 3 expansion
+    freezeable_groups: List[str] = field(default_factory=list)
+    data_actuator_keys: List[str] = field(default_factory=list)
+    grad_clip_available: bool = False
+    swa_available: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -38,6 +43,7 @@ class TrainingCapabilities:
                    "mutable_state_keys", "metric_names"):
             if isinstance(d[k], tuple):
                 d[k] = list(d[k])
+        # freezeable_groups and data_actuator_keys are already lists
         return d
 
     def save(self, run_dir: str) -> None:
@@ -60,6 +66,11 @@ class TrainingCapabilities:
                        "mutable_state_keys", "metric_names"):
                 if k in d and isinstance(d[k], list):
                     d[k] = tuple(d[k])
+            # Backwards compatibility: supply defaults for new Phase 3 fields
+            d.setdefault("freezeable_groups", [])
+            d.setdefault("data_actuator_keys", [])
+            d.setdefault("grad_clip_available", False)
+            d.setdefault("swa_available", False)
             return cls(**d)
         except Exception:
             return None
