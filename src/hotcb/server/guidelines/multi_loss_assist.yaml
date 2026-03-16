@@ -1,0 +1,66 @@
+name: multi_loss_assist
+description: Helpers for multi-task training with auxiliary losses
+version: "1.0"
+requires: []
+rules:
+  - id: aux_conflict_reduce
+    condition: custom
+    metric: aux_loss
+    params:
+      expression: "conflict_score > 0.7"
+    action:
+      module: loss
+      op: set_params
+      params:
+        aux_weight: 0.5
+    confidence: medium
+    priority: medium
+    cooldown: 50
+    description: "Reduce aux weight when gradient conflict score is high"
+    rollback_if:
+      no_improvement_after: 200
+
+  - id: loss_ratio_target
+    condition: custom
+    metric: train_loss
+    params:
+      expression: "aux_loss > 3 * train_loss"
+    action:
+      module: loss
+      op: set_params
+      params:
+        aux_weight: 0.3
+    confidence: medium
+    priority: medium
+    cooldown: 100
+    description: "Cap aux weight when aux loss dominates main loss (3x ratio)"
+
+  - id: aux_instability_rollback
+    condition: custom
+    metric: aux_loss
+    params:
+      expression: "aux_loss > 10.0"
+    action:
+      module: loss
+      op: set_params
+      params:
+        aux_weight: 0.1
+    confidence: high
+    priority: high
+    cooldown: 50
+    description: "Emergency aux weight reduction when aux loss is unstable"
+
+  - id: aux_warmup_ramp
+    condition: custom
+    metric: step
+    params:
+      expression: "step < 100"
+    action:
+      module: loss
+      op: set_params
+      params:
+        aux_weight: 0.1
+    confidence: low
+    priority: low
+    cooldown: 20
+    description: "Keep aux weight low during early warmup phase"

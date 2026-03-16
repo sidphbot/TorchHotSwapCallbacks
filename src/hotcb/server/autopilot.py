@@ -37,6 +37,14 @@ class AutopilotRule:
     confidence: str = "medium"  # "high", "medium", "low"
     enabled: bool = True
     description: str = ""
+    # Policy pack DSL extensions
+    bounds: Optional[Dict[str, float]] = None      # {"min": 0.001, "max": 0.1}
+    rollback_if: Optional[Dict[str, Any]] = None    # {"no_improvement_after": 1000}
+    priority: str = "medium"                         # "low", "medium", "high", "critical"
+    suppress_rules: Optional[List[str]] = None       # rule IDs to suppress when this fires
+
+
+_PRIORITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
 
 @dataclass
@@ -159,6 +167,21 @@ def _eval_custom(
 # ---------------------------------------------------------------------------
 
 
+def _action_target_key(action: dict) -> str:
+    """Build a string key identifying the actuator target of an action.
+
+    Used for conflict resolution — two rules targeting the same key
+    are in conflict; only the higher-priority one fires.
+    """
+    module = action.get("module", "")
+    op = action.get("op", "")
+    params = action.get("params", {})
+    if not params:
+        return ""
+    param_keys = ",".join(sorted(params.keys()))
+    return f"{module}:{op}:{param_keys}"
+
+
 class AutopilotEngine:
     """
     Rule engine that monitors metrics and proposes or auto-applies
@@ -204,6 +227,8 @@ class AutopilotEngine:
         # Actuator descriptions cache (loaded from hotcb.actuators.json)
         self._actuator_descs: Optional[list[dict]] = None
         self._actuator_descs_mtime: float = 0.0
+        # Active policy packs
+        self._active_packs: list[str] = []
 
     @classmethod
     def with_default_guidelines(cls, run_dir: str, mode: str = "off", config: Any = None) -> "AutopilotEngine":
@@ -287,9 +312,13 @@ class AutopilotEngine:
         if not isinstance(data, dict) or "rules" not in data:
             raise ValueError(f"Invalid guidelines file: expected 'rules' key")
         count = 0
+        prefix = data.get("_prefix", "")  # internal: set by load_pack
         for entry in data["rules"]:
+            rid = entry["id"]
+            if prefix:
+                rid = f"{prefix}.{rid}"
             rule = AutopilotRule(
-                rule_id=entry["id"],
+                rule_id=rid,
                 condition=entry["condition"],
                 metric_name=entry.get("metric", ""),
                 params=entry.get("params", {}),
@@ -297,10 +326,108 @@ class AutopilotEngine:
                 confidence=entry.get("confidence", "medium"),
                 enabled=entry.get("enabled", True),
                 description=entry.get("description", ""),
+                bounds=entry.get("bounds"),
+                rollback_if=entry.get("rollback_if"),
+                priority=entry.get("priority", "medium"),
+                suppress_rules=entry.get("suppress_rules"),
             )
+            # Merge top-level cooldown into params if present
+            if "cooldown" in entry and "cooldown" not in rule.params:
+                rule.params["cooldown"] = entry["cooldown"]
             self.add_rule(rule)
             count += 1
         return count
+
+    # -- Policy Packs -------------------------------------------------------
+
+    def load_pack(self, pack_name: str) -> int:
+        """Load a policy pack by name from guidelines/. Returns count of rules loaded."""
+        from .guidelines import GUIDELINES_DIR
+        path = os.path.join(GUIDELINES_DIR, f"{pack_name}.yaml")
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Policy pack not found: {pack_name} (looked at {path})")
+        try:
+            import yaml
+        except ImportError:
+            raise ImportError("PyYAML is required to load packs: pip install pyyaml")
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict) or "rules" not in data:
+            raise ValueError(f"Invalid pack file: expected 'rules' key in {pack_name}.yaml")
+        # Set prefix so load_guidelines prefixes rule IDs
+        data["_prefix"] = pack_name
+        count = 0
+        for entry in data["rules"]:
+            rid = f"{pack_name}.{entry['id']}"
+            rule = AutopilotRule(
+                rule_id=rid,
+                condition=entry["condition"],
+                metric_name=entry.get("metric", ""),
+                params=dict(entry.get("params", {})),
+                action=entry.get("action", {}),
+                confidence=entry.get("confidence", "medium"),
+                enabled=entry.get("enabled", True),
+                description=entry.get("description", ""),
+                bounds=entry.get("bounds"),
+                rollback_if=entry.get("rollback_if"),
+                priority=entry.get("priority", "medium"),
+                suppress_rules=entry.get("suppress_rules"),
+            )
+            if "cooldown" in entry and "cooldown" not in rule.params:
+                rule.params["cooldown"] = entry["cooldown"]
+            self.add_rule(rule)
+            count += 1
+        if pack_name not in self._active_packs:
+            self._active_packs.append(pack_name)
+        log.info("[hotcb.autopilot] loaded pack %s (%d rules)", pack_name, count)
+        return count
+
+    def unload_pack(self, pack_name: str) -> int:
+        """Remove all rules from a pack. Returns count removed."""
+        prefix = f"{pack_name}."
+        to_remove = [rid for rid in self._rules if rid.startswith(prefix)]
+        for rid in to_remove:
+            del self._rules[rid]
+        if pack_name in self._active_packs:
+            self._active_packs.remove(pack_name)
+        log.info("[hotcb.autopilot] unloaded pack %s (%d rules)", pack_name, len(to_remove))
+        return len(to_remove)
+
+    def list_packs(self) -> List[dict]:
+        """List available packs with metadata from guidelines/ directory."""
+        from .guidelines import GUIDELINES_DIR
+        packs = []
+        try:
+            import yaml
+        except ImportError:
+            return []
+        for fname in sorted(os.listdir(GUIDELINES_DIR)):
+            if not fname.endswith(".yaml"):
+                continue
+            pack_name = fname[:-5]  # strip .yaml
+            if pack_name == "default":
+                continue  # default.yaml is the community guidelines, not a pack
+            path = os.path.join(GUIDELINES_DIR, fname)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                if not isinstance(data, dict) or "rules" not in data:
+                    continue
+                packs.append({
+                    "name": data.get("name", pack_name),
+                    "description": data.get("description", ""),
+                    "version": data.get("version", "1.0"),
+                    "requires": data.get("requires", []),
+                    "rules_count": len(data.get("rules", [])),
+                    "file": fname,
+                })
+            except Exception:
+                continue
+        return packs
+
+    def active_packs(self) -> List[str]:
+        """List currently loaded pack names."""
+        return list(self._active_packs)
 
     # -- Evaluation ---------------------------------------------------------
 
@@ -321,7 +448,8 @@ class AutopilotEngine:
         # Compute health state
         self._update_health_state()
 
-        actions: list[AutopilotAction] = []
+        # Collect fired rules with their condition descriptions
+        fired: list[tuple[AutopilotRule, str]] = []
 
         for rule in self._rules.values():
             if not rule.enabled:
@@ -338,6 +466,35 @@ class AutopilotEngine:
             condition_desc = self._check_condition(rule, metrics)
             if condition_desc is None:
                 continue
+
+            fired.append((rule, condition_desc))
+
+        # Sort by priority (highest first)
+        fired.sort(
+            key=lambda rc: _PRIORITY_ORDER.get(rc[0].priority, 1),
+            reverse=True,
+        )
+
+        # Build suppress set from higher-priority rules
+        suppressed: set[str] = set()
+        for rule, _ in fired:
+            if rule.suppress_rules:
+                suppressed.update(rule.suppress_rules)
+
+        # Conflict resolution: for same actuator target, higher priority wins
+        seen_targets: set[str] = set()
+        actions: list[AutopilotAction] = []
+
+        for rule, condition_desc in fired:
+            if rule.rule_id in suppressed:
+                continue
+
+            # Build a target key for conflict detection
+            target_key = _action_target_key(rule.action)
+            if target_key and target_key in seen_targets:
+                continue  # lower priority rule for same target, skip
+            if target_key:
+                seen_targets.add(target_key)
 
             # Determine status based on mode and confidence
             status = self._determine_status(rule.confidence)
@@ -1022,5 +1179,37 @@ def create_router(engine: Optional[AutopilotEngine] = None, ai_engine: Any = Non
         if _ai_engine is None:
             return {"error": "AI engine not configured"}
         return _ai_engine.state.to_dict()
+
+    # -- Policy pack endpoints -----------------------------------------------
+
+    class PackRequest(BaseModel):
+        pack_name: str
+
+    @router.get("/packs")
+    async def list_packs():
+        """List available policy packs."""
+        return {"packs": _engine.list_packs()}
+
+    @router.post("/packs/load")
+    async def load_pack(body: PackRequest):
+        """Load a policy pack by name."""
+        try:
+            count = _engine.load_pack(body.pack_name)
+            return {"status": "loaded", "pack_name": body.pack_name, "rules_loaded": count}
+        except FileNotFoundError as exc:
+            return JSONResponse(status_code=404, content={"error": str(exc)})
+        except Exception as exc:
+            return JSONResponse(status_code=400, content={"error": str(exc)})
+
+    @router.post("/packs/unload")
+    async def unload_pack(body: PackRequest):
+        """Unload a policy pack."""
+        count = _engine.unload_pack(body.pack_name)
+        return {"status": "unloaded", "pack_name": body.pack_name, "rules_removed": count}
+
+    @router.get("/packs/active")
+    async def active_packs():
+        """List currently loaded policy packs."""
+        return {"active_packs": _engine.active_packs()}
 
     return router

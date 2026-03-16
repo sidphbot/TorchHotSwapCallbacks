@@ -1,0 +1,64 @@
+name: finish_strong
+description: Late-stage training policies for optimal convergence
+version: "1.0"
+requires: []
+rules:
+  - id: enable_swa_late
+    condition: custom
+    metric: step
+    params:
+      expression: "step > 800"
+    action:
+      module: cb
+      op: enable
+      params:
+        id: swa
+    confidence: medium
+    priority: medium
+    cooldown: 500
+    description: "Enable SWA callback in late training for better generalization"
+
+  - id: enable_ema_late
+    condition: custom
+    metric: step
+    params:
+      expression: "step > 700"
+    action:
+      module: cb
+      op: enable
+      params:
+        id: ema
+    confidence: medium
+    priority: medium
+    cooldown: 500
+    description: "Enable EMA callback for smoother parameter averaging"
+
+  - id: mutation_lockdown
+    condition: custom
+    metric: step
+    params:
+      expression: "step > 900"
+    action:
+      module: opt
+      op: set_params
+      params:
+        lr_mult: 0.1
+    confidence: high
+    priority: high
+    cooldown: 500
+    description: "Final LR reduction for stable convergence in last training phase"
+
+  - id: best_checkpoint
+    condition: custom
+    metric: val_loss
+    params:
+      expression: "val_loss < 0.01"
+    action:
+      module: cb
+      op: enable
+      params:
+        id: checkpoint
+    confidence: low
+    priority: low
+    cooldown: 200
+    description: "Enable checkpointing when validation loss reaches target"

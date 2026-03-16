@@ -1,0 +1,67 @@
+name: stability_basics
+description: Core stability heuristics for any training run
+version: "1.0"
+requires: []
+rules:
+  - id: nan_guard
+    condition: custom
+    metric: train_loss
+    params:
+      expression: "math.isnan(train_loss) or math.isinf(train_loss)"
+    action:
+      module: opt
+      op: set_params
+      params:
+        lr_mult: 0.5
+    confidence: critical
+    priority: critical
+    cooldown: 50
+    description: "Emergency LR cut on NaN/Inf loss"
+
+  - id: grad_spike_clip
+    condition: custom
+    metric: grad_norm
+    params:
+      expression: "grad_norm > 10.0"
+    action:
+      module: opt
+      op: set_params
+      params:
+        lr_mult: 0.5
+    confidence: high
+    priority: high
+    cooldown: 20
+    description: "Halve LR when gradient norm spikes above 10"
+
+  - id: lr_emergency_floor
+    condition: custom
+    metric: train_loss
+    params:
+      expression: "train_loss > 100.0"
+    action:
+      module: opt
+      op: set_params
+      params:
+        lr_mult: 0.1
+    confidence: critical
+    priority: critical
+    cooldown: 100
+    description: "Emergency 10x LR reduction when loss exceeds 100"
+    suppress_rules:
+      - "stability_basics.grad_spike_clip"
+
+  - id: loss_spike_recovery
+    condition: divergence
+    metric: train_loss
+    params:
+      window: 5
+      threshold: 0.5
+      cooldown: 30
+    action:
+      module: opt
+      op: set_params
+      params:
+        lr_mult: 0.3
+    confidence: high
+    priority: high
+    description: "Reduce LR by 70% on sharp loss spike (>0.5 in 5 steps)"
