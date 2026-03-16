@@ -62,12 +62,20 @@ The kernel and training process communicate through the filesystem (JSONL files)
 
 ### Actuator system (`src/hotcb/actuators/`)
 
-Unified per-parameter actuator model. Convenience constructors:
-- `optimizer_actuators(optimizer)` — creates lr, wd, betas actuators from a torch optimizer
-- `loss_actuators(weights_dict)` — creates FLOAT actuators that mutate the original dict
-- `mutable_state(actuators)` — wraps a list of `HotcbActuator` instances into a `MutableState`
+Unified per-parameter actuator model. Every controllable scalar/toggle/choice is a `HotcbActuator` with a closure-based `apply_fn` that captures the live object.
 
-Adapters auto-discover optimizer actuators from the framework (Lightning/HF). Users register custom actuators via `mutable_state()`.
+Convenience constructors (each returns `List[HotcbActuator]`):
+- `optimizer_actuators(optimizer)` — lr, wd, betas from a torch optimizer
+- `loss_actuators(weights_dict)` — FLOAT actuators that mutate the original dict
+- `data_actuators(dataset, attrs={...})` — maps named dataset attributes to actuators via `setattr` closures
+- `model_actuators(model, groups={...})` — freeze/unfreeze BOOL actuators per module group
+- `grad_clip_actuator(initial_value)` — FLOAT actuator for gradient clipping threshold
+- `swa_actuator(container)` / `ema_actuator(container)` — BOOL actuators for SWA/EMA toggle
+- `safety_actuators()` — safe_mode and mutation_lock BOOL actuators
+- `mutable_state(actuators)` — wraps a list into a `MutableState`
+- `HotDataKernel(dataset)` — convenience wrapper that auto-discovers mutable dataset attributes
+
+**Hook philosophy**: hotcb never owns the optimizer, dataloader, or model. It captures references and mutates via closures. Adapters auto-discover from frameworks; bare PyTorch users register explicitly.
 
 ### Dashboard config (`src/hotcb/server/config.py`)
 
@@ -104,6 +112,30 @@ Top-level adapters (`lightning.py`, `hf.py`) wrap HotKernel for PyTorch Lightnin
 ### Bench (`src/hotcb/bench/`)
 
 Synthetic benchmarks and CIFAR-10 autopilot evaluation. `tasks.py` defines tasks, `runner.py` runs them, `report.py` generates outputs, `eval_autopilot.py` compares baseline vs autopilot.
+
+### Health state system (`src/hotcb/health.py`)
+
+`TrainingHealthState` dataclass with `compute_health_state(metric_history, window)`. Computes:
+- **Numeric stability**: NaN/Inf counts, loss spike detection (>3x EMA)
+- **Gradient health**: grad_norm trend (rising/stable/falling), clipping rate
+- **Multi-loss conflict**: per-loss trends, dominance ratios, conflict score (0=aligned, 1=opposed)
+- **Derived labels**: `numerically-unsafe`, `collapse-risk`, `aux-conflicted`, `oscillatory`, `stable-plateaued`, `stable-improving`, `converged-likely`
+
+Exposed at `GET /api/state/health`. Wired into autopilot evaluation and AI prompts.
+
+### Effect tracking (`src/hotcb/tracking.py`)
+
+`EffectTracker` records metric baselines at mutation time, computes deltas after cooldown, classifies outcomes (improved/neutral/degraded). Supports auto-rollback triggers when key metric degrades.
+
+### Policy packs (`src/hotcb/server/guidelines/`)
+
+5 shipped YAML policy packs: `stability_basics`, `multi_loss_assist`, `distillation_assist`, `plateau_recovery`, `finish_strong`. Each contains 4 rules with priority, bounds, suppress, and rollback_if DSL fields.
+
+Loaded via `AutopilotEngine.load_pack(name)`, managed via `/api/autopilot/packs/*` endpoints.
+
+### Guarantee envelope
+
+See `docs/guarantee_envelope.md`. hotcb provides "convergence assist" — stability interventions, bounded mutations, rollback, and audit trail — but does not guarantee mathematical convergence.
 
 ## Multi-Agent Coordination
 

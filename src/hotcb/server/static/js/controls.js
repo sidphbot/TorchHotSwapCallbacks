@@ -95,6 +95,8 @@ function buildKnobRow(spec) {
     var logMax = Math.log10(spec.max || 1.0);
     var logCurrent = (spec.current && spec.current > 0) ? Math.log10(spec.current) : logMin;
 
+    var wrap = document.createElement('div');
+    wrap.className = 'knob-slider-wrap';
     var slider = document.createElement('input');
     slider.type = 'range';
     slider.className = 'knob-slider';
@@ -104,7 +106,11 @@ function buildKnobRow(spec) {
     slider.value = logCurrent;
     slider.dataset.param = spec.param_key;
     slider.dataset.logScale = 'true';
-    row.appendChild(slider);
+    var tick = document.createElement('div');
+    tick.className = 'knob-applied-tick';
+    wrap.appendChild(slider);
+    wrap.appendChild(tick);
+    row.appendChild(wrap);
 
     var valInput = document.createElement('input');
     valInput.type = 'text';
@@ -114,6 +120,8 @@ function buildKnobRow(spec) {
     row.appendChild(valInput);
   } else {
     // Linear slider (float, int)
+    var wrap = document.createElement('div');
+    wrap.className = 'knob-slider-wrap';
     var slider = document.createElement('input');
     slider.type = 'range';
     slider.className = 'knob-slider';
@@ -122,7 +130,11 @@ function buildKnobRow(spec) {
     slider.step = spec.step || 0.01;
     slider.value = spec.current != null ? spec.current : 0;
     slider.dataset.param = spec.param_key;
-    row.appendChild(slider);
+    var tick = document.createElement('div');
+    tick.className = 'knob-applied-tick';
+    wrap.appendChild(slider);
+    wrap.appendChild(tick);
+    row.appendChild(wrap);
 
     var valInput = document.createElement('input');
     valInput.type = 'text';
@@ -202,6 +214,68 @@ function _getControlSpec(paramKey) {
   return null;
 }
 
+/**
+ * Update the slider track gradient to show a red delta region
+ * between the applied (baseline) value and current slider position.
+ */
+function _updateSliderDelta(row) {
+  var param = row.dataset.param;
+  var slider = row.querySelector('.knob-slider');
+  if (!slider) return;
+
+  var tick = row.querySelector('.knob-applied-tick');
+  var applied = _appliedKnobs[param];
+  if (applied === undefined) {
+    // No baseline yet — plain track
+    slider.style.background = '';
+    if (tick) tick.style.opacity = '0';
+    return;
+  }
+
+  var sMin = parseFloat(slider.min);
+  var sMax = parseFloat(slider.max);
+  var range = sMax - sMin;
+  if (range <= 0) return;
+
+  // Convert applied value to slider space (log if needed)
+  var appliedSlider = applied;
+  if (slider.dataset.logScale === 'true') {
+    appliedSlider = (applied > 0) ? Math.log10(applied) : sMin;
+  }
+  var currentSlider = parseFloat(slider.value);
+
+  var appliedPct = Math.max(0, Math.min(100, ((appliedSlider - sMin) / range) * 100));
+  var currentPct = Math.max(0, Math.min(100, ((currentSlider - sMin) / range) * 100));
+
+  // Position the applied-value tick mark
+  if (tick) {
+    tick.style.left = 'calc(' + appliedPct + '% - 1px)';
+  }
+
+  // If essentially same position, clear gradient
+  if (Math.abs(appliedPct - currentPct) < 0.5) {
+    slider.style.background = '';
+    return;
+  }
+
+  var lo = Math.min(appliedPct, currentPct);
+  var hi = Math.max(appliedPct, currentPct);
+  var trackColor = 'var(--border)';
+  var deltaColor = 'rgba(255, 77, 94, 0.45)';
+
+  slider.style.background = 'linear-gradient(to right, ' +
+    trackColor + ' 0%, ' + trackColor + ' ' + lo + '%, ' +
+    deltaColor + ' ' + lo + '%, ' + deltaColor + ' ' + hi + '%, ' +
+    trackColor + ' ' + hi + '%, ' + trackColor + ' 100%)';
+  slider.style.borderRadius = '2px';
+}
+
+function _updateAllSliderDeltas() {
+  var panel = document.getElementById('knobPanel');
+  if (!panel) return;
+  panel.querySelectorAll('.knob-row[data-param]').forEach(_updateSliderDelta);
+}
+
 function _markStagedChanges() {
   var panel = document.getElementById('knobPanel');
   if (!panel) return;
@@ -210,6 +284,9 @@ function _markStagedChanges() {
     var param = row.dataset.param;
     var current = _readKnobValue(row);
     var applied = _appliedKnobs[param];
+
+    // Update delta overlay on slider track
+    _updateSliderDelta(row);
 
     if (applied === undefined || current === undefined) {
       row.classList.remove('staged');
@@ -240,8 +317,9 @@ function _snapshotAppliedKnobs() {
     var val = _readKnobValue(row);
     if (val !== undefined) _appliedKnobs[param] = val;
   });
-  // Clear all staged highlights
+  // Clear all staged highlights and reset delta overlays
   document.querySelectorAll('.knob-row.staged').forEach(function(el) { el.classList.remove('staged'); });
+  _updateAllSliderDeltas();
 }
 
 function debounceApply(fn, delay) {

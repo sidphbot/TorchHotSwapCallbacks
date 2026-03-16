@@ -710,7 +710,8 @@ function hexToRgba(hex, alpha) {
 }
 
 var _metricToggleState = {};  // metric name -> boolean (checked)
-var _metricDropdownShowAll = false;
+var _metricDropdownShowAll = true;  // show all metrics by default
+var _metricSearchQuery = '';  // current search filter
 var _dropdownCloseHandler = null;
 var _commonMetricPatterns = [
   'train_loss', 'val_loss', 'loss', 'accuracy', 'val_accuracy',
@@ -733,10 +734,16 @@ function _isCommonMetric(name) {
 function _getVisibleMetrics() {
   var all = [];
   S.metricNames.forEach(function(name) { all.push(name); });
-  if (_metricDropdownShowAll || all.length <= 20) return all;
-  // Filter to common patterns only
-  var filtered = all.filter(_isCommonMetric);
-  return filtered.length > 0 ? filtered : all.slice(0, 20);
+  if (!_metricDropdownShowAll && all.length > 20) {
+    var filtered = all.filter(_isCommonMetric);
+    all = filtered.length > 0 ? filtered : all.slice(0, 20);
+  }
+  // Apply search filter
+  if (_metricSearchQuery) {
+    var q = _metricSearchQuery.toLowerCase();
+    all = all.filter(function(name) { return name.toLowerCase().indexOf(q) !== -1; });
+  }
+  return all;
 }
 
 function updateMetricBadge() {
@@ -837,6 +844,21 @@ function _renderMetricDropdown(container) {
   var panel = document.createElement('div');
   panel.className = 'metric-dropdown-panel' + (wasOpen ? ' open' : '');
 
+  // Search bar
+  var searchInput = document.createElement('input');
+  searchInput.type = 'text';
+  searchInput.className = 'metric-dropdown-search';
+  searchInput.placeholder = 'Search metrics...';
+  searchInput.value = _metricSearchQuery;
+  searchInput.addEventListener('input', function(e) {
+    e.stopPropagation();
+    _metricSearchQuery = e.target.value;
+    _rebuildMetricList(container, wrapper, totalCount);
+  });
+  searchInput.addEventListener('click', function(e) { e.stopPropagation(); });
+  searchInput.addEventListener('keydown', function(e) { e.stopPropagation(); });
+  panel.appendChild(searchInput);
+
   // Controls row: Select All / None / Show All toggle
   var controls = document.createElement('div');
   controls.className = 'metric-dropdown-controls';
@@ -846,8 +868,8 @@ function _renderMetricDropdown(container) {
   btnAll.textContent = 'All On';
   btnAll.addEventListener('click', function(e) {
     e.stopPropagation();
-    S.metricNames.forEach(function(name) { _metricToggleState[name] = true; });
-    _renderMetricDropdown(container);
+    _getVisibleMetrics().forEach(function(name) { _metricToggleState[name] = true; });
+    _rebuildMetricList(container, wrapper, totalCount);
     updateChart();
   });
 
@@ -856,8 +878,8 @@ function _renderMetricDropdown(container) {
   btnNone.textContent = 'All Off';
   btnNone.addEventListener('click', function(e) {
     e.stopPropagation();
-    S.metricNames.forEach(function(name) { _metricToggleState[name] = false; });
-    _renderMetricDropdown(container);
+    _getVisibleMetrics().forEach(function(name) { _metricToggleState[name] = false; });
+    _rebuildMetricList(container, wrapper, totalCount);
     updateChart();
   });
 
@@ -872,16 +894,49 @@ function _renderMetricDropdown(container) {
     btnShowAll.addEventListener('click', function(e) {
       e.stopPropagation();
       _metricDropdownShowAll = !_metricDropdownShowAll;
-      _renderMetricDropdown(container);
+      _rebuildMetricList(container, wrapper, totalCount);
     });
     controls.appendChild(btnShowAll);
   }
 
   panel.appendChild(controls);
 
-  // Metric list
+  // Metric list container
   var list = document.createElement('div');
   list.className = 'metric-dropdown-list';
+  panel.appendChild(list);
+
+  // Populate list items
+  _rebuildMetricList(container, wrapper, totalCount);
+  wrapper.appendChild(panel);
+
+  // Close dropdown when clicking outside (single delegated listener)
+  if (!_dropdownCloseHandler) {
+    _dropdownCloseHandler = function(e) {
+      var wraps = document.querySelectorAll('.metric-dropdown-wrap');
+      wraps.forEach(function(w) {
+        if (!w.contains(e.target)) {
+          var p = w.querySelector('.metric-dropdown-panel');
+          if (p) p.classList.remove('open');
+        }
+      });
+    };
+    document.addEventListener('click', _dropdownCloseHandler);
+  }
+}
+
+/**
+ * Rebuild just the metric list items inside the dropdown.
+ * Preserves search input focus and scroll position.
+ */
+function _rebuildMetricList(container, wrapper, totalCount) {
+  var panel = wrapper.querySelector('.metric-dropdown-panel');
+  if (!panel) return;
+  var list = panel.querySelector('.metric-dropdown-list');
+  if (!list) return;
+
+  var scrollTop = list.scrollTop;
+  list.innerHTML = '';
 
   var visible = _getVisibleMetrics();
   visible.forEach(function(name) {
@@ -892,7 +947,7 @@ function _renderMetricDropdown(container) {
     var isActive = !!_metricToggleState[name];
     var isPinned = S.pinnedMetrics && S.pinnedMetrics.has(name);
 
-    // Filled/hollow dot toggle (replaces checkbox + swatch)
+    // Filled/hollow dot toggle
     var dot = document.createElement('span');
     dot.className = 'metric-dot' + (isActive ? ' active' : '') + (isPinned ? ' pinned' : '');
     dot.style.color = color;
@@ -906,19 +961,18 @@ function _renderMetricDropdown(container) {
       S.metricNames.forEach(function(n) { if (_metricToggleState[n]) cnt++; });
       var badge = wrapper.querySelector('.metric-count-badge');
       if (badge) badge.textContent = cnt + '/' + totalCount;
-      _renderMetricDropdown(container);
+      _rebuildMetricList(container, wrapper, totalCount);
       updateChart();
     });
-    // Double-click or right-click to toggle pin
     dot.addEventListener('dblclick', function(e) {
       e.stopPropagation(); e.preventDefault();
       toggleMetricCard(name);
-      _renderMetricDropdown(container);
+      _rebuildMetricList(container, wrapper, totalCount);
     });
     dot.addEventListener('contextmenu', function(e) {
       e.preventDefault(); e.stopPropagation();
       toggleMetricCard(name);
-      _renderMetricDropdown(container);
+      _rebuildMetricList(container, wrapper, totalCount);
     });
 
     var label = document.createElement('span');
@@ -931,14 +985,14 @@ function _renderMetricDropdown(container) {
       S.metricNames.forEach(function(n) { if (_metricToggleState[n]) cnt++; });
       var badge = wrapper.querySelector('.metric-count-badge');
       if (badge) badge.textContent = cnt + '/' + totalCount;
-      _renderMetricDropdown(container);
+      _rebuildMetricList(container, wrapper, totalCount);
       updateChart();
     });
 
     row.appendChild(dot);
     row.appendChild(label);
 
-    // Pin button — always visible, toggles pinned state
+    // Pin button
     var pinIcon = document.createElement('span');
     pinIcon.className = 'metric-pin-icon' + (isPinned ? ' pinned' : '');
     pinIcon.textContent = '\u{1F4CC}';
@@ -946,7 +1000,7 @@ function _renderMetricDropdown(container) {
     pinIcon.addEventListener('click', function(e) {
       e.stopPropagation();
       toggleMetricCard(name);
-      _renderMetricDropdown(container);
+      _rebuildMetricList(container, wrapper, totalCount);
     });
     row.appendChild(pinIcon);
 
@@ -963,22 +1017,14 @@ function _renderMetricDropdown(container) {
     }
   }
 
-  panel.appendChild(list);
-  wrapper.appendChild(panel);
+  // Restore scroll position
+  list.scrollTop = scrollTop;
 
-  // Close dropdown when clicking outside (single delegated listener)
-  if (!_dropdownCloseHandler) {
-    _dropdownCloseHandler = function(e) {
-      var wraps = document.querySelectorAll('.metric-dropdown-wrap');
-      wraps.forEach(function(w) {
-        if (!w.contains(e.target)) {
-          var p = w.querySelector('.metric-dropdown-panel');
-          if (p) p.classList.remove('open');
-        }
-      });
-    };
-    document.addEventListener('click', _dropdownCloseHandler);
-  }
+  // Update badge
+  var cnt = 0;
+  S.metricNames.forEach(function(n) { if (_metricToggleState[n]) cnt++; });
+  var badge = wrapper.querySelector('.metric-count-badge');
+  if (badge) badge.textContent = cnt + '/' + totalCount;
 }
 
 // ---- Per-metric pinnable cards ----

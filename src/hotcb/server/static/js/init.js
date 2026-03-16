@@ -84,6 +84,18 @@ async function initialLoad() {
       });
       delete S._pendingPinnedMetrics;
     }
+    // Default pins: train_loss, val_loss, key_metric (if no saved pins restored)
+    if (S.pinnedMetrics.size === 0) {
+      var defaultPins = ['train_loss', 'val_loss'];
+      var aiKeyEl = document.getElementById('aiKeyMetric');
+      if (aiKeyEl && aiKeyEl.value) defaultPins.push(aiKeyEl.value);
+      defaultPins.forEach(function(name) {
+        if (S.metricNames.has(name) && !S.pinnedMetrics.has(name)) {
+          S.pinnedMetrics.add(name);
+          createMetricCard(name);
+        }
+      });
+    }
     updateMetricToggles();
     updateChart();
     computeHealth();
