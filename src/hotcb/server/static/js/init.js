@@ -2,6 +2,36 @@
  * hotcb dashboard — initialization and data loading
  */
 
+/* ================================================================ */
+/* Health state polling & badges                                     */
+/* ================================================================ */
+var _HEALTH_BADGE_COLORS = {
+  'numerically-unsafe': 'red',
+  'collapse-risk': 'red',
+  'aux-conflicted': 'yellow',
+  'oscillatory': 'yellow',
+  'stable-plateaued': 'yellow',
+  'stable-improving': 'green',
+  'converged-likely': 'blue'
+};
+
+function pollHealthState() {
+  api('GET', '/api/state/health').then(function(data) {
+    if (!data) return;
+    var container = document.getElementById('healthBadges');
+    if (!container) return;
+    var labels = data.labels || [];
+    if (labels.length === 0) {
+      container.innerHTML = '';
+      return;
+    }
+    container.innerHTML = labels.map(function(label) {
+      var color = _HEALTH_BADGE_COLORS[label] || 'blue';
+      return '<span class="health-badge health-badge--' + color + '">' + label + '</span>';
+    }).join('');
+  });
+}
+
 function dismissChartWaiting() {
   var el = document.getElementById('chartWaiting');
   if (el && !el.classList.contains('hidden')) {
@@ -137,6 +167,10 @@ async function initialLoad() {
   startForecastPolling();
   var _alertPollMs = (S.config && S.config.ui) ? S.config.ui.alert_poll_interval : 15000;
   S._alertInterval = setInterval(fetchAlerts, _alertPollMs);
+
+  // Health state polling (every 10s)
+  pollHealthState();
+  S._healthPollInterval = setInterval(pollHealthState, 10000);
 
   // Show tour for first-time users (with delay to let UI settle)
   if (shouldShowTour()) {

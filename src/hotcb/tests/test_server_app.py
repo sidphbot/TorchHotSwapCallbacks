@@ -381,3 +381,18 @@ class TestLauncherImmutableRunDir:
             assert not hasattr(launcher, "_active_run_dir"), (
                 "_active_run_dir removed in Phase 5; launcher uses _run_dir only"
             )
+
+
+class TestHealthEndpoint:
+    def test_health_endpoint_returns_state(self, populated_dir):
+        """GET /api/state/health should return a health state dict."""
+        app = create_app(populated_dir)
+        from starlette.testclient import TestClient
+        client = TestClient(app)
+        resp = client.get("/api/state/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "labels" in data
+        assert "numeric_stability" in data
+        assert "optimization_health" in data
+        assert "multi_loss" in data

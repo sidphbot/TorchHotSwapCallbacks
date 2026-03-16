@@ -441,3 +441,78 @@ class TestAutopilotWithDefaultGuidelines:
         if os.path.exists(cmd_path):
             with open(cmd_path) as f:
                 assert f.read().strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# Health state integration
+# ---------------------------------------------------------------------------
+
+
+class TestAutopilotHealthIntegration:
+    def test_autopilot_evaluate_includes_health_state(self, tmp_dir):
+        """evaluate() should compute and store health state."""
+        engine = AutopilotEngine(run_dir=tmp_dir, mode="suggest")
+        for i in range(50):
+            engine.evaluate(i, {"train_loss": 1.0 - 0.01 * i, "grad_norm": 0.5})
+        hs = engine.health_state
+        assert hs is not None
+        assert isinstance(hs.labels, list)
+        assert hs.step >= 0
+        assert hs.numeric_stability["nan_count"] == 0
+
+
+class TestAIPromptHealthIntegration:
+    def test_ai_prompt_includes_health_labels(self):
+        """build_context with health_state should include labels section."""
+        from hotcb.server.ai_prompts import build_context
+        from hotcb.health import TrainingHealthState
+
+        hs = TrainingHealthState(
+            labels=["stable-improving"],
+            numeric_stability={"nan_count": 0, "inf_count": 0, "spike_count": 0},
+            optimization_health={"grad_norm_trend": "flat"},
+            multi_loss={"conflict_score": 0.0},
+            step=100,
+            timestamp=0.0,
+        )
+        msgs = build_context(
+            step=100,
+            metric_history={"train_loss": [0.5, 0.4, 0.3]},
+            alerts=[],
+            action_history=[],
+            current_state={},
+            ai_state={"key_metric": "train_loss"},
+            health_state=hs,
+        )
+        user_msg = msgs[1]["content"]
+        assert "Training Health" in user_msg
+        assert "stable-improving" in user_msg
+
+    def test_ai_prompt_includes_conflict_score(self):
+        """build_context should surface multi-loss conflict score."""
+        from hotcb.server.ai_prompts import build_context
+        from hotcb.health import TrainingHealthState
+
+        hs = TrainingHealthState(
+            labels=["aux-conflicted"],
+            numeric_stability={"nan_count": 0, "inf_count": 0, "spike_count": 0},
+            optimization_health={"grad_norm_trend": "flat"},
+            multi_loss={
+                "conflict_score": 0.65,
+                "dominance_ratios": {"cls_loss": 0.8, "recon_loss": 0.2},
+            },
+            step=100,
+            timestamp=0.0,
+        )
+        msgs = build_context(
+            step=100,
+            metric_history={"train_loss": [0.5]},
+            alerts=[],
+            action_history=[],
+            current_state={},
+            ai_state={"key_metric": "train_loss"},
+            health_state=hs,
+        )
+        user_msg = msgs[1]["content"]
+        assert "conflict score" in user_msg.lower()
+        assert "0.65" in user_msg

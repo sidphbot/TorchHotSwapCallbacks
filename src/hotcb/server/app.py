@@ -520,6 +520,15 @@ def create_app(
             return {"detected": False}
         return {"detected": True, **caps.to_dict()}
 
+    @app.get("/api/state/health")
+    async def get_health_state():
+        """Return current training health state."""
+        hs = autopilot_engine.health_state
+        if hs is None:
+            return {"labels": [], "numeric_stability": {}, "optimization_health": {},
+                    "multi_loss": {}, "step": 0, "timestamp": 0}
+        return hs.to_dict()
+
     @app.get("/api/state/controls")
     async def get_control_state():
         """Return current control state for UI restoration on refresh.
