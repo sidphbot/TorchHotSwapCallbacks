@@ -188,6 +188,8 @@ class AutopilotEngine:
         self._default_cooldown: int = 10
         # AI engine reference (set externally via set_ai_engine)
         self._ai_engine: Any = None
+        # Latest health state (computed on each evaluate call)
+        self._health_state: Any = None
 
     @classmethod
     def with_default_guidelines(cls, run_dir: str, mode: str = "off", config: Any = None) -> "AutopilotEngine":
@@ -301,6 +303,9 @@ class AutopilotEngine:
         # Update metric history
         for name, value in metrics.items():
             self._metric_history[name].append(value)
+
+        # Compute health state
+        self._update_health_state()
 
         actions: list[AutopilotAction] = []
 
@@ -430,6 +435,24 @@ class AutopilotEngine:
         history = self._metric_history.get(name, [])
         return history[-1] if history else None
 
+    # -- Health state -------------------------------------------------------
+
+    @property
+    def health_state(self) -> Any:
+        """Return the latest computed TrainingHealthState, or None."""
+        return self._health_state
+
+    def _update_health_state(self) -> None:
+        """Recompute health state from current metric history."""
+        from ..health import compute_health_state
+        # Convert flat metric history (list of floats) to {step, value} format
+        structured: dict[str, list[dict]] = {}
+        for name, values in self._metric_history.items():
+            structured[name] = [
+                {"step": i, "value": v} for i, v in enumerate(values)
+            ]
+        self._health_state = compute_health_state(structured)
+
     # -- Accept proposed actions --------------------------------------------
 
     def accept_action(self, action_id: str) -> Optional[AutopilotAction]:
@@ -517,6 +540,9 @@ class AutopilotEngine:
 
         # Run rules as alert/sensor layer (no auto-apply)
         alerts = self.evaluate_rules_for_alerts(step, metrics)
+
+        # Compute health state (evaluate_rules_for_alerts already updated history)
+        self._update_health_state()
 
         # Check if AI should be invoked
         alert_dicts = [asdict(a) for a in alerts]

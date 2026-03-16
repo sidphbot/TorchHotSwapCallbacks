@@ -919,3 +919,18 @@ body.compare-zoom-mode .tab-content[data-tab="compare"] { flex: 1; }
   color: var(--text-secondary); padding: 0 8px;
 }
 .compare-active-mode .compare-status-bar { display: flex; }
+
+/* ================================================================== */
+/* Health badges                                                       */
+/* ================================================================== */
+.health-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.health-badge {
+  display: inline-block;
+  font-size: 10px; font-family: var(--font-mono);
+  padding: 2px 7px; border-radius: 3px;
+  font-weight: 600; letter-spacing: 0.02em;
+}
+.health-badge--green  { background: rgba(51,221,119,0.15); color: var(--green); border: 1px solid rgba(51,221,119,0.3); }
+.health-badge--yellow { background: rgba(255,210,51,0.12); color: var(--yellow); border: 1px solid rgba(255,210,51,0.25); }
+.health-badge--red    { background: rgba(255,77,94,0.15); color: var(--red); border: 1px solid rgba(255,77,94,0.3); }
+.health-badge--blue   { background: rgba(61,158,255,0.12); color: var(--blue); border: 1px solid rgba(61,158,255,0.25); }

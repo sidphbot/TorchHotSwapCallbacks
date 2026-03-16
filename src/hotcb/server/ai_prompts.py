@@ -355,6 +355,7 @@ def build_context(
     mode: str = "trend",
     watch_metrics_raw: Optional[List[str]] = None,
     capabilities: Optional[dict] = None,
+    health_state: Optional[Any] = None,
 ) -> List[Dict[str, str]]:
     """
     Assemble the LLM message list for an autopilot invocation.
@@ -506,6 +507,37 @@ def build_context(
             wired = capabilities.get("grad_clip_wired", False)
             cap_lines.append(f"- **Grad clip**: {clip} ({'wired' if wired else 'advisory only'})")
         user_parts.extend(cap_lines)
+        user_parts.append("")
+
+    # Training health state
+    if health_state is not None:
+        user_parts.append("## Training Health")
+        hs = health_state if isinstance(health_state, dict) else (
+            health_state.to_dict() if hasattr(health_state, "to_dict") else {}
+        )
+        labels = hs.get("labels", [])
+        if labels:
+            user_parts.append(f"- **Labels**: {', '.join(labels)}")
+        else:
+            user_parts.append("- **Labels**: none (healthy)")
+        ns = hs.get("numeric_stability", {})
+        if ns.get("nan_count", 0) or ns.get("inf_count", 0) or ns.get("spike_count", 0):
+            user_parts.append(
+                f"- **Numeric issues**: NaN={ns.get('nan_count', 0)}, "
+                f"Inf={ns.get('inf_count', 0)}, spikes={ns.get('spike_count', 0)}"
+            )
+        ml = hs.get("multi_loss", {})
+        if ml.get("conflict_score", 0) > 0:
+            user_parts.append(f"- **Multi-loss conflict score**: {ml['conflict_score']:.2f}")
+            ratios = ml.get("dominance_ratios", {})
+            if ratios:
+                ratio_strs = [f"{k}={v:.2f}" for k, v in ratios.items()]
+                user_parts.append(f"- **Dominance ratios**: {', '.join(ratio_strs)}")
+        oh = hs.get("optimization_health", {})
+        if oh.get("grad_norm_trend", "unknown") != "unknown":
+            user_parts.append(f"- **Grad norm trend**: {oh['grad_norm_trend']}")
+        if oh.get("clipping_rate", 0) > 0:
+            user_parts.append(f"- **Grad clipping rate**: {oh['clipping_rate']:.1%}")
         user_parts.append("")
 
     # Available metrics list
