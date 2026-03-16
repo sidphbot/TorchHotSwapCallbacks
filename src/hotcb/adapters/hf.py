@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 
-from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
+try:
+    from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
+except ImportError:
+    raise ImportError(
+        "hotcb HuggingFace adapter requires transformers: pip install transformers"
+    )
 
 from hotcb.kernel import HotKernel
 from hotcb.capabilities import TrainingCapabilities, validate_mutable_state

@@ -427,7 +427,8 @@ class AutopilotEngine:
                     "rules_count": len(data.get("rules", [])),
                     "file": fname,
                 })
-            except Exception:
+            except (OSError, ValueError) as exc:
+                log.warning("Failed to read pack %s: %s", fname, exc)
                 continue
         return packs
 
@@ -612,7 +613,8 @@ class AutopilotEngine:
                     data = json.load(f)
                 self._actuator_descs = data.get("controls", [])
                 self._actuator_descs_mtime = mtime
-            except Exception:
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                log.warning("Failed to reload actuator descriptions: %s", exc)
                 self._actuator_descs = self._actuator_descs or []
         return self._actuator_descs or []
 

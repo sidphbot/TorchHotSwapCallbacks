@@ -330,8 +330,8 @@ class LLMAutopilotEngine:
             caps = TrainingCapabilities.load(self._run_dir)
             if caps is not None:
                 caps_dict = {"detected": True, **caps.to_dict()}
-        except Exception:
-            pass
+        except (ImportError, OSError, ValueError) as exc:
+            log.warning("Failed to load training capabilities: %s", exc)
 
         messages = build_context(
             step=step,

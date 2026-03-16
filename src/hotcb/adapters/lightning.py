@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-import pytorch_lightning as pl
+try:
+    import pytorch_lightning as pl
+except ImportError:
+    raise ImportError(
+        "hotcb Lightning adapter requires pytorch-lightning: pip install pytorch-lightning"
+    )
 
 from hotcb.kernel import HotKernel
 from hotcb.capabilities import TrainingCapabilities, validate_mutable_state
