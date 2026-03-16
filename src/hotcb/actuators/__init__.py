@@ -9,6 +9,8 @@ from .actuator import (  # noqa: F401
     _INIT_SENTINEL,
 )
 from .state import MutableState  # noqa: F401
+from .model import model_actuators  # noqa: F401
+from .data import data_actuators, HotDataKernel  # noqa: F401
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -150,3 +152,131 @@ def loss_actuators(
 def mutable_state(actuators: List[HotcbActuator]) -> MutableState:
     """User-facing constructor for MutableState."""
     return MutableState(actuators)
+
+
+def grad_clip_actuator(
+    initial_value: float = 1.0,
+    min_val: float = 0.01,
+    max_val: float = 100.0,
+) -> Tuple[HotcbActuator, dict]:
+    """Create a FLOAT actuator for gradient clipping.
+
+    Returns the actuator and a mutable container dict with key ``clip_value``.
+    The training loop should read ``container["clip_value"]`` each step.
+    """
+    container = {"clip_value": initial_value}
+
+    def _apply_clip(value: Any, env: dict, _c=container) -> ApplyResult:
+        try:
+            _c["clip_value"] = float(value)
+            return ApplyResult(success=True, detail={"clip_value": float(value)})
+        except Exception as exc:
+            return ApplyResult(success=False, error=str(exc))
+
+    act = HotcbActuator(
+        param_key="grad_clip",
+        type=ActuatorType.FLOAT,
+        apply_fn=_apply_clip,
+        label="Gradient Clip",
+        group="optimizer",
+        min_value=min_val,
+        max_value=max_val,
+        current_value=initial_value,
+    )
+    return act, container
+
+
+def swa_actuator(model_container: dict) -> HotcbActuator:
+    """Create a BOOL actuator for SWA (Stochastic Weight Averaging).
+
+    Sets ``model_container["swa_enabled"]``.  Actual model wrapping is the
+    adapter's responsibility.
+    """
+    _c = model_container
+
+    def _apply_swa(value: Any, env: dict, _cont=_c) -> ApplyResult:
+        try:
+            _cont["swa_enabled"] = bool(value)
+            return ApplyResult(success=True, detail={"swa_enabled": bool(value)})
+        except Exception as exc:
+            return ApplyResult(success=False, error=str(exc))
+
+    return HotcbActuator(
+        param_key="swa_enabled",
+        type=ActuatorType.BOOL,
+        apply_fn=_apply_swa,
+        label="SWA",
+        group="model",
+        current_value=False,
+    )
+
+
+def ema_actuator(model_container: dict) -> HotcbActuator:
+    """Create a BOOL actuator for EMA (Exponential Moving Average).
+
+    Sets ``model_container["ema_enabled"]``.  Actual model wrapping is the
+    adapter's responsibility.
+    """
+    _c = model_container
+
+    def _apply_ema(value: Any, env: dict, _cont=_c) -> ApplyResult:
+        try:
+            _cont["ema_enabled"] = bool(value)
+            return ApplyResult(success=True, detail={"ema_enabled": bool(value)})
+        except Exception as exc:
+            return ApplyResult(success=False, error=str(exc))
+
+    return HotcbActuator(
+        param_key="ema_enabled",
+        type=ActuatorType.BOOL,
+        apply_fn=_apply_ema,
+        label="EMA",
+        group="model",
+        current_value=False,
+    )
+
+
+def safety_actuators() -> List[HotcbActuator]:
+    """Create safety actuators: safe_mode and mutation_lock.
+
+    - ``safe_mode``: BOOL flag, when True indicates the system should halve
+      mutation deltas (conservative mode).
+    - ``mutation_lock``: BOOL flag, when True blocks all mutations.
+
+    Both store their state in a shared container dict accessible via
+    ``actuator.detail`` in the ApplyResult.
+    """
+    container = {"safe_mode": False, "mutation_lock": False}
+
+    def _apply_safe(value: Any, env: dict, _c=container) -> ApplyResult:
+        try:
+            _c["safe_mode"] = bool(value)
+            return ApplyResult(success=True, detail={"safe_mode": bool(value)})
+        except Exception as exc:
+            return ApplyResult(success=False, error=str(exc))
+
+    def _apply_lock(value: Any, env: dict, _c=container) -> ApplyResult:
+        try:
+            _c["mutation_lock"] = bool(value)
+            return ApplyResult(success=True, detail={"mutation_lock": bool(value)})
+        except Exception as exc:
+            return ApplyResult(success=False, error=str(exc))
+
+    return [
+        HotcbActuator(
+            param_key="safe_mode",
+            type=ActuatorType.BOOL,
+            apply_fn=_apply_safe,
+            label="Safe Mode",
+            group="safety",
+            current_value=False,
+        ),
+        HotcbActuator(
+            param_key="mutation_lock",
+            type=ActuatorType.BOOL,
+            apply_fn=_apply_lock,
+            label="Mutation Lock",
+            group="safety",
+            current_value=False,
+        ),
+    ]
