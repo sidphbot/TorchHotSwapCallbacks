@@ -395,7 +395,17 @@ class MyCallback:
 
 ## Autopilot
 
-hotcb includes a multi-level autopilot system:
+AI-assisted training optimization with policy packs. The autopilot monitors metrics, detects problems (NaN, plateau, divergence, multi-loss conflict), and applies corrective interventions automatically or via human review.
+
+```bash
+# Start with rule-based suggestions
+hotcb serve --dir runs/exp1 --autopilot suggest
+
+# Load a policy pack for stability
+curl -X POST http://localhost:8421/api/autopilot/pack/load \
+  -H "Content-Type: application/json" \
+  -d '{"pack": "stability_basics"}'
+```
 
 | Mode | Behavior |
 |---|---|
@@ -405,6 +415,13 @@ hotcb includes a multi-level autopilot system:
 | `ai_suggest` | LLM-driven: reads metric trends + alerts, proposes actions for human review |
 | `ai_auto` | LLM-driven: proposes and auto-applies with safety guards |
 
+**Policy packs** — reusable YAML rule bundles for common scenarios:
+- `stability_basics` — NaN guard, gradient spike clip, loss spike recovery
+- `multi_loss_assist` — auxiliary conflict reduction, loss ratio targeting
+- `distillation_assist` — distillation warmup, spatial ramp, temperature guard
+- `plateau_recovery` — stagnation detection, cosine restart, conservative finish
+- `finish_strong` — late-stage SWA/EMA, mutation lockdown, best checkpoint
+
 AI autopilot features:
 - **Compressed trend context**: sends slope/volatility/direction summaries (not raw values) to the LLM for token efficiency
 - **Key metric system**: primary optimization target, changeable by AI or human mid-run
@@ -413,6 +430,11 @@ AI autopilot features:
 - **Safety guards**: action bounds, cooldown between interventions, noop bias, auto-disable on divergence
 
 Set `HOTCB_AI_KEY` env var for the LLM API key (any OpenAI-compatible provider).
+
+For details, see:
+- [Autopilot Architecture](docs/autopilot.md) — 3-layer design, modes, state flow, configuration
+- [Policy Pack Reference](docs/policy_packs.md) — pack catalog, YAML DSL, custom rule authoring
+- [Guarantee Envelope](docs/guarantee_envelope.md) — what the autopilot guarantees and does not guarantee
 
 ## Safety
 
