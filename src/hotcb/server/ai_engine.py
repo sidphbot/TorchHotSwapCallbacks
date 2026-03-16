@@ -64,6 +64,7 @@ class AIState:
     cadence_override: Optional[int] = None
     # Transient per-run tracking
     watch_metrics_raw: List[str] = field(default_factory=list)
+    outcome_streak: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -88,6 +89,7 @@ class AIState:
             next_check_step=data.get("next_check_step"),
             cadence_override=data.get("cadence_override"),
             watch_metrics_raw=data.get("watch_metrics_raw", []),
+            outcome_streak=data.get("outcome_streak", []),
         )
 
 
@@ -170,6 +172,10 @@ class LLMAutopilotEngine:
                 # Only override if user hasn't explicitly set cadence in AIConfig
                 self.config.cadence = ai_cadence
 
+        # Failure recovery: fallback mode
+        self._fallback_until_step: Optional[int] = None
+        self._fallback_steps: int = 100
+
         # Load persisted state if exists
         self.load_state()
 
@@ -224,6 +230,10 @@ class LLMAutopilotEngine:
         if not self.config.api_key:
             return False
 
+        # Fallback mode: skip invocations until fallback period expires
+        if self._fallback_until_step is not None and step < self._fallback_until_step:
+            return False
+
         # Budget exhausted
         if self._total_cost >= self.config.budget_cap:
             log.info("[hotcb.ai] Budget cap reached (%.2f >= %.2f)", self._total_cost, self.config.budget_cap)
@@ -245,8 +255,8 @@ class LLMAutopilotEngine:
         if self.state.next_check_step is not None and step >= self.state.next_check_step:
             return True
 
-        # Periodic cadence
-        cadence = self.state.cadence_override or self.config.cadence
+        # Periodic cadence (adaptive based on outcome streak)
+        cadence = self.state.cadence_override or self._adaptive_interval()
         if cadence > 0 and self._last_invoked_step >= 0:
             if step - self._last_invoked_step >= cadence:
                 return True
@@ -268,6 +278,34 @@ class LLMAutopilotEngine:
             return "full"
         return "trend"
 
+    # -- Adaptive cadence ---------------------------------------------------
+
+    def _adaptive_interval(self) -> int:
+        """Compute cadence interval adapted by outcome streak."""
+        base = self.config.cadence
+        streak = self.state.outcome_streak
+
+        if len(streak) >= 3:
+            last_3 = streak[-3:]
+            if all(o == "improved" for o in last_3):
+                interval = int(base * 0.5)
+                return max(interval, 50)  # floor
+            elif all(o == "neutral" for o in last_3):
+                interval = int(base * 2.0)
+                return min(interval, 500)  # ceiling
+
+        return base
+
+    def update_outcome_streak(self, outcome: str) -> None:
+        """Append an outcome to the streak. "degraded" resets the streak."""
+        if outcome == "degraded":
+            self.state.outcome_streak = ["degraded"]
+        else:
+            self.state.outcome_streak.append(outcome)
+        # Keep streak bounded
+        if len(self.state.outcome_streak) > 10:
+            self.state.outcome_streak = self.state.outcome_streak[-10:]
+
     # -- LLM invocation ------------------------------------------------------
 
     async def invoke(
@@ -277,6 +315,7 @@ class LLMAutopilotEngine:
         alerts: List[dict],
         action_history: List[dict],
         current_state: Dict[str, Any],
+        completed_effects: Optional[List[Any]] = None,
     ) -> Optional[AIDecision]:
         """
         Assemble prompt, call LLM, parse response, return decision.
@@ -304,14 +343,18 @@ class LLMAutopilotEngine:
             mode=context_mode,
             watch_metrics_raw=self.state.watch_metrics_raw,
             capabilities=caps_dict,
+            completed_effects=completed_effects,
         )
 
         self._last_invoked_step = step
 
         try:
-            raw_response, cost = await self._call_llm(messages)
+            raw_response, cost = await self._call_llm(messages, current_step=step)
         except Exception as exc:
             log.error("[hotcb.ai] LLM call failed: %s", exc)
+            return None
+
+        if raw_response is None:
             return None
 
         self._call_count += 1
@@ -371,9 +414,39 @@ class LLMAutopilotEngine:
 
         return decision
 
-    async def _call_llm(self, messages: List[Dict[str, str]]) -> tuple:
+    async def _call_llm(
+        self,
+        messages: List[Dict[str, str]],
+        current_step: Optional[int] = None,
+    ) -> tuple:
         """
-        Call the LLM via OpenAI-compatible API. Returns (response_text, cost_usd).
+        Call the LLM with retry logic. Returns (response_text, cost_usd).
+        On double failure, enters fallback mode and returns (None, 0.0).
+        """
+        import asyncio as _asyncio
+
+        for attempt in range(2):
+            try:
+                return await self._raw_llm_call(messages)
+            except Exception as exc:
+                log.warning(
+                    "[hotcb.ai] LLM call attempt %d failed: %s", attempt + 1, exc
+                )
+                if attempt == 0:
+                    await _asyncio.sleep(5)
+                    continue
+                # Double failure — enter fallback mode
+                step = current_step or self._last_invoked_step
+                self._fallback_until_step = step + self._fallback_steps
+                log.warning(
+                    "[hotcb.ai] Entering fallback mode until step %d",
+                    self._fallback_until_step,
+                )
+                return None, 0.0
+
+    async def _raw_llm_call(self, messages: List[Dict[str, str]]) -> tuple:
+        """
+        Raw LLM call via OpenAI-compatible API. Returns (response_text, cost_usd).
         """
         try:
             import httpx

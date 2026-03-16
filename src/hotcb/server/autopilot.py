@@ -229,6 +229,12 @@ class AutopilotEngine:
         self._actuator_descs_mtime: float = 0.0
         # Active policy packs
         self._active_packs: list[str] = []
+        # Mode auto-progression: ai_suggest -> ai_auto
+        self._accepted_suggestion_streak: int = 0
+        self._auto_progress_enabled: bool = False
+        self._auto_progress_threshold: int = 5
+        # Effect tracker reference (set externally)
+        self._effect_tracker: Any = None
 
     @classmethod
     def with_default_guidelines(cls, run_dir: str, mode: str = "off", config: Any = None) -> "AutopilotEngine":
@@ -748,8 +754,49 @@ class AutopilotEngine:
                     action.rule_id,
                     action.step,
                 )
+                # Track streak for mode auto-progression
+                self._accepted_suggestion_streak += 1
+                self._maybe_auto_progress()
                 return action
         return None
+
+    def reject_action(self, action_id: str) -> Optional[AutopilotAction]:
+        """
+        Reject a proposed action and reset the suggestion streak.
+        Returns the action if found, None otherwise.
+        """
+        for action in self._history:
+            if action.action_id == action_id:
+                if action.status != "proposed":
+                    return None
+                action.status = "rejected"
+                self._accepted_suggestion_streak = 0
+                log.info(
+                    "[hotcb.autopilot] rejected action %s (rule %s)",
+                    action_id,
+                    action.rule_id,
+                )
+                return action
+        return None
+
+    def _maybe_auto_progress(self) -> None:
+        """Check if mode should auto-progress from ai_suggest to ai_auto."""
+        if not self._auto_progress_enabled:
+            return
+        if self._mode != "ai_suggest":
+            return
+        if self._accepted_suggestion_streak >= self._auto_progress_threshold:
+            log.info(
+                "[hotcb.autopilot] Auto-progressing from ai_suggest to ai_auto "
+                "(streak=%d >= threshold=%d)",
+                self._accepted_suggestion_streak,
+                self._auto_progress_threshold,
+            )
+            self._mode = "ai_auto"
+
+    def set_effect_tracker(self, tracker: Any) -> None:
+        """Attach an EffectTracker for action outcome reporting."""
+        self._effect_tracker = tracker
 
     # -- AI mode helpers -----------------------------------------------------
 
@@ -835,6 +882,11 @@ class AutopilotEngine:
             if val is not None:
                 current_state[name] = val
 
+        # Get completed effects from tracker (if available)
+        completed_effects = None
+        if self._effect_tracker is not None:
+            completed_effects = self._effect_tracker.get_completed()
+
         # Invoke AI
         decision = await self._ai_engine.invoke(
             step=step,
@@ -842,6 +894,7 @@ class AutopilotEngine:
             alerts=alert_dicts,
             action_history=self._ai_engine.get_history(last_n=10),
             current_state=current_state,
+            completed_effects=completed_effects,
         )
 
         if decision is None:
