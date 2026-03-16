@@ -173,7 +173,14 @@ class AutopilotEngine:
     - ``"ai_auto"``    — LLM proposes and applies (with safety guards)
     """
 
-    def __init__(self, run_dir: str, mode: str = "off", config: Any = None) -> None:
+    def __init__(
+        self,
+        run_dir: str,
+        mode: str = "off",
+        config: Any = None,
+        mutation_budget: int = 10,
+        budget_window_steps: int = 200,
+    ) -> None:
         if mode not in _VALID_MODES:
             raise ValueError(f"Invalid mode: {mode!r}")
         self._run_dir = run_dir
@@ -190,6 +197,13 @@ class AutopilotEngine:
         self._ai_engine: Any = None
         # Latest health state (computed on each evaluate call)
         self._health_state: Any = None
+        # Mutation budget
+        self._mutation_budget = mutation_budget
+        self._budget_window_steps = budget_window_steps
+        self._mutation_steps: list[int] = []
+        # Actuator descriptions cache (loaded from hotcb.actuators.json)
+        self._actuator_descs: Optional[list[dict]] = None
+        self._actuator_descs_mtime: float = 0.0
 
     @classmethod
     def with_default_guidelines(cls, run_dir: str, mode: str = "off", config: Any = None) -> "AutopilotEngine":
@@ -340,7 +354,16 @@ class AutopilotEngine:
             )
 
             if status == "applied":
-                self._apply_action(rule.action)
+                if not self.check_mutation_budget(step):
+                    log.info("[hotcb.autopilot] mutation budget exceeded at step %d, skipping", step)
+                    action.status = "rejected"
+                else:
+                    validated = self.validate_action(rule.action)
+                    if validated is not None:
+                        self._apply_action(validated)
+                        self.record_mutation(step)
+                    else:
+                        action.status = "rejected"
 
             self._history.append(action)
             self._last_fired[rule.rule_id] = step
@@ -397,6 +420,102 @@ class AutopilotEngine:
             return "applied"
         else:  # low
             return "proposed"
+
+    # -- Mutation budget ----------------------------------------------------
+
+    def check_mutation_budget(self, step: int) -> bool:
+        """Return True if a mutation is allowed under the current budget."""
+        window_start = step - self._budget_window_steps
+        recent = [s for s in self._mutation_steps if s > window_start]
+        return len(recent) < self._mutation_budget
+
+    def record_mutation(self, step: int) -> None:
+        """Record that a mutation was applied at this step."""
+        self._mutation_steps.append(step)
+
+    # -- Action validation --------------------------------------------------
+
+    def _load_actuator_descs(self) -> list[dict]:
+        """Load actuator descriptions from the filesystem cache."""
+        path = os.path.join(self._run_dir, "hotcb.actuators.json")
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return self._actuator_descs or []
+        if mtime != self._actuator_descs_mtime:
+            try:
+                import json
+                with open(path, "r") as f:
+                    data = json.load(f)
+                self._actuator_descs = data.get("controls", [])
+                self._actuator_descs_mtime = mtime
+            except Exception:
+                self._actuator_descs = self._actuator_descs or []
+        return self._actuator_descs or []
+
+    def validate_action(self, action_cmd: dict) -> Optional[dict]:
+        """Validate an action against known actuator bounds.
+
+        Returns the (possibly clamped) command dict, or None if invalid.
+        """
+        params = action_cmd.get("params", {})
+        if not params:
+            return action_cmd
+
+        descs = self._load_actuator_descs()
+        desc_by_key = {d["param_key"]: d for d in descs}
+
+        validated_params = {}
+        for key, value in params.items():
+            desc = desc_by_key.get(key)
+            if desc is None:
+                # Unknown actuator — pass through
+                validated_params[key] = value
+                continue
+
+            atype = desc.get("type", "float")
+
+            # Type check
+            if atype in ("float", "log_float"):
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    log.warning("Validation rejected %s: type mismatch (expected numeric, got %s)",
+                                key, type(value).__name__)
+                    return None
+                # Clamp to bounds
+                min_v = desc.get("min")
+                max_v = desc.get("max")
+                if min_v is not None and value < min_v:
+                    value = min_v
+                if max_v is not None and value > max_v:
+                    value = max_v
+                if atype == "log_float" and value <= 0:
+                    log.warning("Validation rejected %s: log_float must be positive", key)
+                    return None
+            elif atype == "int":
+                if not isinstance(value, int) or isinstance(value, bool):
+                    log.warning("Validation rejected %s: type mismatch (expected int)", key)
+                    return None
+                min_v = desc.get("min")
+                max_v = desc.get("max")
+                if min_v is not None and value < min_v:
+                    value = int(min_v)
+                if max_v is not None and value > max_v:
+                    value = int(max_v)
+            elif atype == "bool":
+                if not isinstance(value, bool):
+                    log.warning("Validation rejected %s: type mismatch (expected bool)", key)
+                    return None
+            elif atype == "choice":
+                choices = desc.get("choices", [])
+                if choices and value not in choices:
+                    log.warning("Validation rejected %s: %r not in choices %s", key, value, choices)
+                    return None
+
+            validated_params[key] = value
+
+        result = dict(action_cmd)
+        result["params"] = validated_params
+        return result
 
     def _apply_action(self, action_cmd: dict) -> None:
         """Write a command to the commands JSONL file.

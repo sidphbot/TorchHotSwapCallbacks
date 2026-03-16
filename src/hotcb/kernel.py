@@ -56,6 +56,7 @@ class HotKernel:
         self.log_path = log_path or os.path.join(run_dir, "hotcb.log")
         self._metrics_collector = metrics_collector
         self._mutable_state = mutable_state
+        self._effect_tracker = None  # Optional EffectTracker, set externally
 
         self._freeze_state = FreezeState.load(self.freeze_path)
         self._recipe_player = RecipePlayer(
@@ -333,16 +334,47 @@ class HotKernel:
                 )
             return
 
+        # Handle rollback
+        if op.op == "rollback":
+            n = (op.params or {}).get("n", 1)
+            results = self._mutable_state.rollback(n=n, env=env)
+            if results is None:
+                self._write_ledger(
+                    op, event, step, decision="failed",
+                    error="empty_snapshot_stack", payload=op.to_dict(), env=env,
+                )
+            else:
+                restored = {k: v.detail for k, v in results.items() if v.success}
+                self._write_ledger(
+                    op, event, step, decision="applied",
+                    payload={"restored": list(results.keys())}, env=env,
+                )
+                self._write_actuator_descriptions()
+            return
+
         if op.op == "set_params":
             applied_any = False
             errors: List[str] = []
             applied_params: Dict[str, Any] = {}
 
             for key, value in self._extract_param_pairs(op):
+                old_value = None
+                act = self._mutable_state.get(key)
+                if act is not None:
+                    old_value = act.current_value
                 result = self._mutable_state.apply(key, value, env, step)
                 if result.success:
                     applied_any = True
                     applied_params[key] = value
+                    # Track effect if tracker is present
+                    if self._effect_tracker is not None:
+                        metric_snapshot = {k: v for k, v in env.items()
+                                           if isinstance(v, (int, float))}
+                        self._effect_tracker.on_mutation(
+                            step=step, param_key=key,
+                            old_value=old_value, new_value=value,
+                            metric_snapshot=metric_snapshot,
+                        )
                 else:
                     errors.append(f"{key}: {result.error}")
 
