@@ -356,6 +356,7 @@ def build_context(
     watch_metrics_raw: Optional[List[str]] = None,
     capabilities: Optional[dict] = None,
     health_state: Optional[Any] = None,
+    completed_effects: Optional[List[Any]] = None,
 ) -> List[Dict[str, str]]:
     """
     Assemble the LLM message list for an autopilot invocation.
@@ -538,6 +539,34 @@ def build_context(
             user_parts.append(f"- **Grad norm trend**: {oh['grad_norm_trend']}")
         if oh.get("clipping_rate", 0) > 0:
             user_parts.append(f"- **Grad clipping rate**: {oh['clipping_rate']:.1%}")
+        user_parts.append("")
+
+    # Recent action outcomes (from EffectTracker)
+    if completed_effects:
+        user_parts.append("## Recent Action Outcomes")
+        user_parts.append(
+            "| Step | Param | Change | Key Metric Delta | Outcome |"
+        )
+        user_parts.append(
+            "|------|-------|--------|------------------|---------|"
+        )
+        for eff in completed_effects[-10:]:
+            param = getattr(eff, "param_key", "?")
+            eff_step = getattr(eff, "step", "?")
+            old_v = getattr(eff, "old_value", "?")
+            new_v = getattr(eff, "new_value", "?")
+            delta = getattr(eff, "delta", {})
+            outcome = getattr(eff, "outcome", "?")
+            # Format the key metric delta
+            delta_strs = []
+            for k, v in delta.items():
+                sign = "+" if v >= 0 else ""
+                label = "improved" if v < 0 else ("degraded" if v > 0 else "neutral")
+                delta_strs.append(f"{sign}{v:.4g} ({label})")
+            delta_str = "; ".join(delta_strs) if delta_strs else "n/a"
+            user_parts.append(
+                f"| {eff_step} | {param} | {old_v}\u2192{new_v} | {delta_str} | {outcome} |"
+            )
         user_parts.append("")
 
     # Available metrics list
