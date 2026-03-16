@@ -18,6 +18,10 @@ from .actuators.base import BaseActuator
 from .actuators.state import MutableState
 from . import config as hotcb_config
 
+import logging
+
+log = logging.getLogger("hotcb.kernel")
+
 
 class HotKernel:
     """
@@ -88,7 +92,8 @@ class HotKernel:
             with open(path, "r", encoding="utf-8") as f:
                 count = sum(1 for _ in f)
             return count
-        except Exception:
+        except (OSError, IOError) as exc:
+            log.warning("Failed to seed seq from %s: %s", path, exc)
             return 0
 
     def register_actuator(self, name: str, actuator: BaseActuator) -> None:
@@ -118,8 +123,8 @@ class HotKernel:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({"controls": descs}, f)
             self._actuators_written = True
-        except Exception:
-            pass  # never crash training
+        except (OSError, IOError, TypeError, ValueError) as exc:
+            log.warning("Failed to write actuator descriptions: %s", exc)
 
     def _should_poll(self) -> bool:
         if self.poll_interval_sec > 0.0:
@@ -153,7 +158,8 @@ class HotKernel:
         try:
             raw_cmds, new_cursor = read_new_jsonl(self._cmd_cursor)
             self._cmd_cursor = new_cursor
-        except Exception:
+        except (OSError, IOError, json.JSONDecodeError) as exc:
+            log.warning("Failed to load commands: %s", exc)
             return []
         return [command_to_hotop(c) for c in raw_cmds]
 
@@ -197,8 +203,8 @@ class HotKernel:
             for ev in events:
                 try:
                     tune.on_event(ev, env)
-                except Exception:
-                    pass  # defensive — never crash training
+                except Exception as exc:
+                    log.warning("tune.on_event(%s) failed: %s", ev, exc)
 
         # collect metrics (zero overhead when collector is None)
         # Skip metric collection on grad accumulation micro-steps to avoid
@@ -208,8 +214,8 @@ class HotKernel:
         if self._metrics_collector is not None and not is_accum_step:
             try:
                 self._metrics_collector.collect(env)
-            except Exception:
-                pass  # never crash training
+            except Exception as exc:
+                log.warning("Metrics collection failed: %s", exc)
 
     def close(self, env: Optional[Dict[str, object]] = None) -> None:
         """
@@ -220,8 +226,8 @@ class HotKernel:
         if tune is not None and hasattr(tune, "close"):
             try:
                 tune.close(env)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("tune.close() failed: %s", exc)
 
         if self._freeze_state.mode not in ("replay", "replay_adjusted"):
             return
