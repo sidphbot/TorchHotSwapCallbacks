@@ -37,8 +37,8 @@ function initTabs() {
       area.querySelectorAll('.tab-content[data-tab]').forEach(function(x) { x.classList.remove('active'); });
       var target = area.querySelector('.tab-content[data-tab="' + t.dataset.tab + '"]');
       if (target) target.classList.add('active');
-      // Compare mode: hide right-col panes, show compact status bar
-      document.body.classList.toggle('compare-active-mode', t.dataset.tab === 'compare');
+      // Non-metrics tabs: hide right-col panes, show compact status bar
+      document.body.classList.toggle('compare-active-mode', t.dataset.tab !== 'metrics');
       if (t.dataset.tab === 'compare') fetchCompareRuns();
       if (t.dataset.tab === 'manifold') {
         fetchManifold();
@@ -167,9 +167,13 @@ function addTimelineItem(rec) {
 /* ================================================================ */
 var _recipeAutoRefresh = null;
 var _recipeEditingIdx = null;  // index being edited, or null
+var _recipeFirstLoad = true;
 
 async function fetchRecipe() {
+  var list = $('#recipeList');
+  if (_recipeFirstLoad && list) showInlineLoader(list, 'Loading recipe\u2026');
   var data = await api('GET', '/api/recipe/');
+  _recipeFirstLoad = false;
   if (!data) return;
   S.recipeEntries = data.entries || [];
   // Don't re-render if user is actively editing an entry
@@ -680,8 +684,13 @@ var _autopilotRules = [];
 var _ruleEditingId = null;  // rule_id being edited, or null
 var _rulesAutoRefresh = null;
 
+var _rulesFirstLoad = true;
+
 async function fetchAutopilotRules() {
+  var list = $('#autopilotRulesList');
+  if (_rulesFirstLoad && list) showInlineLoader(list, 'Loading rules\u2026');
   var data = await api('GET', '/api/autopilot/rules');
+  _rulesFirstLoad = false;
   if (!data || !data.rules) return;
   _autopilotRules = data.rules;
   if (_ruleEditingId !== null) return;  // Don't re-render during edit
@@ -1047,13 +1056,21 @@ function _renderCompareRunList(runs) {
         var stepInfo = run.step_count ? run.step_count + ' steps' : '--';
         var sourceTag = run._external ? '<span style="color:var(--cyan);font-size:8px;margin-left:4px">EXT</span>' : '';
 
+        // Focus button — loads this run into main Metrics tab
+        var focusBtnHtml = run.dir
+            ? '<button class="btn btn-sm" style="font-size:8px;padding:1px 5px;flex-shrink:0" data-focus-dir="' + run.dir + '" data-focus-label="' + configLabel + '" title="View in Metrics tab">Focus</button>'
+            : '';
+
         div.innerHTML = dot +
             '<div style="flex:1;overflow:hidden">' +
             '<div style="font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + configLabel + sourceTag + '</div>' +
             '<div style="color:var(--text-muted);font-size:9px">' + run.run_id + ' · ' + stepInfo + '</div>' +
-            '</div>';
+            '</div>' + focusBtnHtml;
 
-        div.addEventListener('click', function() {
+        // Click on the row toggles selection for comparison
+        div.addEventListener('click', function(e) {
+            // Don't toggle if Focus button was clicked
+            if (e.target.hasAttribute('data-focus-dir')) return;
             if (_selectedCompareRuns.has(run.run_id)) {
                 _selectedCompareRuns.delete(run.run_id);
                 div.style.borderColor = 'var(--border)';
@@ -1066,11 +1083,88 @@ function _renderCompareRunList(runs) {
             updateCompareChart();
         });
 
+        // Focus button click — load into Metrics tab
+        var focusBtn = div.querySelector('[data-focus-dir]');
+        if (focusBtn) {
+            focusBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                _focusRun(focusBtn.getAttribute('data-focus-dir'), focusBtn.getAttribute('data-focus-label'));
+            });
+        }
+
         list.appendChild(div);
     });
 }
 
+// Expose for research.js eval auto-focus
+window._focusRunFromResearch = function(dir, label) { _focusRun(dir, label); };
+
+async function _focusRun(dir, label) {
+    // Load a run's metrics into the main Metrics tab
+    // Show loader on the chart area
+    var chartArea = document.querySelector('.chart-wrap');
+    var _focusLoader = chartArea ? showLoader(chartArea, 'Loading ' + (label || 'run') + '\u2026') : null;
+    try {
+        var metricsResp = await api('GET', '/api/runs/external/metrics?dir=' + encodeURIComponent(dir) + '&last_n=100000');
+        var appliedResp = await api('GET', '/api/runs/external/applied?dir=' + encodeURIComponent(dir) + '&last_n=1000');
+        if (!metricsResp || !metricsResp.records || metricsResp.records.length === 0) {
+            hideLoader(_focusLoader);
+            return;
+        }
+
+        // Clear all metrics state
+        S.metricsData = {};
+        S.metricNames = new Set();
+        S.latestMetrics = {};
+        S.appliedData = [];
+
+        // Load metrics — same logic as initialLoad
+        metricsResp.records.forEach(function(rec) {
+            var step = rec.step || 0;
+            var metrics = rec.metrics || {};
+            Object.assign(S.latestMetrics, metrics);
+            Object.keys(metrics).forEach(function(name) {
+                var value = metrics[name];
+                if (typeof value !== 'number') return;
+                S.metricNames.add(name);
+                if (!S.metricsData[name]) S.metricsData[name] = [];
+                S.metricsData[name].push({step: step, value: value});
+            });
+        });
+
+        // Load applied mutations
+        if (appliedResp && appliedResp.records) {
+            appliedResp.records.forEach(function(rec) {
+                S.appliedData.push(rec);
+            });
+        }
+
+        // Update focused run header
+        var header = document.getElementById('focusedRunHeader');
+        if (header) {
+            header.textContent = label || dir;
+            header.style.display = 'inline-block';
+        }
+
+        // Switch to Metrics tab
+        var metricsTab = document.querySelector('.tab[data-tab="metrics"]');
+        if (metricsTab) metricsTab.click();
+
+        // Rebuild full UI state
+        hideLoader(_focusLoader);
+        if (typeof dismissChartWaiting === 'function') dismissChartWaiting();
+        if (typeof updateMetricToggles === 'function') updateMetricToggles();
+        if (typeof updateChart === 'function') updateChart();
+        if (typeof computeHealth === 'function') computeHealth();
+    } catch (e) {
+        hideLoader(_focusLoader);
+        console.warn('Failed to focus run:', e);
+    }
+}
+
 async function fetchCompareRuns() {
+    var list = $('#compareRunList');
+    showInlineLoader(list, 'Discovering runs\u2026');
     var data = await api('GET', '/api/runs/discover');
     var allRuns = [];
     if (data && data.runs) {
@@ -1213,8 +1307,8 @@ function _rebuildCompareChart() {
     // Mutation annotation plugin for compare chart
     var compareAnnotations = [];
 
-    // Color by metric name (consistent across runs), dash pattern by run/experiment
-    var runDashPatterns = [[], [6, 3], [3, 3], [8, 3, 2, 3], [4, 2], [10, 3]];
+    // Color by experiment/run (consistent per run), dash/dot/style by metric
+    var metricDashPatterns = [[], [6, 3], [3, 3], [8, 3, 2, 3], [4, 2], [10, 3], [2, 6], [8, 2, 2, 2, 2, 2]];
 
     // Pre-compute per-metric min/max for normalization (across all runs)
     var _cmpMetricRange = {};
@@ -1238,7 +1332,8 @@ function _rebuildCompareChart() {
 
     runIds.forEach(function(runId, runIdx) {
         var records = _compareAllData[runId] || [];
-        var dashPattern = runDashPatterns[runIdx % runDashPatterns.length];
+        // Color by experiment (each run gets a unique color)
+        var runColor = _getCompareRunColor(runId);
 
         enabledMetrics.forEach(function(metricName, metricIdx) {
             var points = [];
@@ -1253,15 +1348,15 @@ function _rebuildCompareChart() {
             });
             if (points.length === 0) return;
 
-            // Color by metric name for consistency across runs
-            var color = typeof getColor === 'function' ? getColor(metricName) : _getCompareRunColor(runId);
+            // Dash pattern by metric (solid for first, dashed for second, etc.)
+            var dashPattern = metricDashPatterns[metricIdx % metricDashPatterns.length];
             var meta = _compareRunMeta[runId] || {};
-            var runLabel = (meta.label || meta.config_name || runId).substring(0, 12);
+            var runLabel = (meta.label || meta.config_name || runId).substring(0, 20);
 
             datasets.push({
                 label: runLabel + ' · ' + metricName,
                 data: points,
-                borderColor: color,
+                borderColor: runColor,
                 backgroundColor: 'transparent',
                 tension: 0.15,
                 pointRadius: 0,
@@ -1492,6 +1587,10 @@ async function updateCompareChart() {
     var promises = [];
     var runIds = Array.from(_selectedCompareRuns);
 
+    // Show loader on chart area while fetching
+    var chartWrap = document.querySelector('#compareBody > div:last-child');
+    var _cmpLoader = chartWrap ? showLoader(chartWrap, 'Loading metrics\u2026') : null;
+
     for (var i = 0; i < runIds.length; i++) {
         (function(runId) {
             var meta = _compareRunMeta[runId] || {};
@@ -1537,6 +1636,7 @@ async function updateCompareChart() {
     }
 
     await Promise.all(promises);
+    hideLoader(_cmpLoader);
 
     // Ensure at least one metric is enabled
     var anyEnabled = false;

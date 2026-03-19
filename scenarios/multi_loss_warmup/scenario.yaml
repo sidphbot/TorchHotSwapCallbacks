@@ -1,0 +1,5 @@
+name: multi_loss_warmup
+pack: multi_loss_assist
+max_steps: 120
+expected_rules:
+  - multi_loss_assist.aux_warmup_ramp

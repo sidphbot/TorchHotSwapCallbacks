@@ -23,6 +23,10 @@ runs/<run_id>/
   hotcb.features.jsonl         # activation capture data (optional)
   hotcb.run.json               # run metadata (launch API)
   hotcb.ai.state.json          # AI autopilot state (multi-run memory)
+  hotcb.research.jsonl         # research event log (hypothesis/evidence creation)
+  hotcb.research.json          # research graph snapshot (fast loading)
+  hotcb.research.training_data.jsonl  # NN learner training data
+  hotcb.research.recipe.jsonl  # confirmed hypotheses exported as recipe
 ```
 
 ## `hotcb.commands.jsonl`
@@ -69,10 +73,11 @@ Append-only JSONL file written exclusively by the training process (HotKernel). 
 | `module` | string | Module that handled the op |
 | `op` | string | Operation name |
 | `id` | string/null | Handle identifier |
-| `source` | string | `"external"`, `"yaml"`, or `"replay"` |
+| `source` | string | `"external"`, `"yaml"`, `"replay"`, or `"autopilot"` |
 | `decision` | string | `"applied"`, `"ignored_freeze"`, `"ignored_replay"`, `"skipped_noop"`, or `"failed"` |
 | `payload` | object/null | Relevant data (params, target, capture info) |
 | `error` | string/null | Error message if `decision=="failed"` |
+| `rule_id` | string/null | Autopilot rule that generated this action (only for `source=="autopilot"`) |
 | `notes` | string/null | Additional context |
 
 ### Example
@@ -342,4 +347,49 @@ AI autopilot state file. Persists across dashboard restarts and carries learning
   "next_check_step": null,
   "cadence_override": null
 }
+```
+
+## `hotcb.research.jsonl`
+
+Append-only event log for the research graph. Each line records a graph mutation.
+
+```json
+{"event":"add_hypothesis","step":150,"wall_time":1710000000.0,"payload":{"node_id":"hyp1","condition":"grad_norm > 10","intervention":{},"expected_outcome":"lr cut recovers","status":"proposed","stream_id":"stability"}}
+{"event":"transition","step":200,"wall_time":1710000010.0,"payload":{"node_id":"hyp1","old_status":"proposed","new_status":"testing"}}
+{"event":"add_evidence","step":250,"wall_time":1710000020.0,"payload":{"node_id":"ev1","hypothesis_id":"hyp1","outcome":"improved","delta":{"train_loss":-0.5}}}
+```
+
+## `hotcb.research.json`
+
+Periodic snapshot of the full research graph for fast loading. Contains nodes, edges, and streams.
+
+```json
+{
+  "nodes": {
+    "hyp1": {"node_id":"hyp1","node_type":"hypothesis","condition":"grad_norm > 10","status":"confirmed","confidence":0.85,"nn_confidence":0.72,"evidence_count":3,...},
+    "ev1": {"node_id":"ev1","node_type":"evidence","hypothesis_id":"hyp1","outcome":"improved","delta":{"train_loss":-0.5},...}
+  },
+  "edges": {
+    "e1": {"edge_id":"e1","source":"ev1","target":"hyp1","edge_type":"supports"}
+  },
+  "streams": {
+    "stability": {"stream_id":"stability","name":"stability study","status":"active","hypothesis_ids":["hyp1"]}
+  }
+}
+```
+
+## `hotcb.research.training_data.jsonl`
+
+NN learner training examples. Each line is a feature vector + label from a completed effect.
+
+```json
+{"features":[0.45,0.02,-0.01,5.3,0.15,0.0,1,0.5,0.001,0,0,0,0.0],"label":1,"step":250,"source":"eval"}
+```
+
+## `hotcb.research.recipe.jsonl`
+
+Confirmed hypotheses exported as a replay-compatible recipe. Same schema as `hotcb.recipe.jsonl`.
+
+```json
+{"at":{"step":150},"module":"opt","op":"set_params","params":{"lr_mult":0.5},"source":"research:hyp1"}
 ```

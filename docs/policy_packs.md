@@ -29,7 +29,7 @@ Core stability heuristics for any training run. This is the recommended starting
 
 | Rule | Condition | Action | Confidence | Priority |
 |------|-----------|--------|------------|----------|
-| `nan_guard` | `train_loss` is NaN or Inf | LR x 0.5 | critical | critical |
+| `nan_guard` | `nan_detected > 0` | LR x 0.5 | critical | critical |
 | `grad_spike_clip` | `grad_norm > 10.0` | LR x 0.5 | high | high |
 | `lr_emergency_floor` | `train_loss > 100.0` | LR x 0.1 | critical | critical |
 | `loss_spike_recovery` | Loss diverges by >0.5 in 5 steps | LR x 0.3 | high | high |
@@ -183,6 +183,11 @@ Evaluates a Python expression against current metric values.
 
 The expression runs in a restricted namespace containing:
 - All current metric values as variables (with `/`, `.`, `-` replaced by `_`)
+- `step` — the current training step number
+- Health-derived fields (injected from `TrainingHealthState`):
+  - `conflict_score` — multi-loss conflict score (0=aligned, 1=opposed)
+  - `loss_cv` — numeric stability coefficient of variation
+  - `grad_trend` — gradient trend direction
 - `abs`, `min`, `max`, `math` builtins
 - No other builtins (safe eval)
 
@@ -190,9 +195,10 @@ Examples:
 ```yaml
 expression: "train_loss > 100.0"
 expression: "grad_norm > 10.0"
-expression: "math.isnan(train_loss) or math.isinf(train_loss)"
+expression: "nan_detected > 0"
 expression: "aux_loss > 3 * train_loss"
 expression: "step > 800"
+expression: "conflict_score > 0.7"
 ```
 
 If a metric referenced in the expression is not yet available, the condition silently returns false (no error).
@@ -300,6 +306,7 @@ rules:
 5. **Add `rollback_if`** for medium-confidence rules so bad interventions are reversible
 6. **Use `custom` conditions** for complex logic; `plateau` and `divergence` for standard patterns
 7. **Test with `hotcb demo`** before deploying to real training
+8. **Use scenarios as references** — the `scenarios/` directory has 12 working examples, one per rule, showing real integration patterns. Run `hotcb scenario list` to see them all, or `hotcb scenario run <name>` to verify a rule fires correctly
 
 ### Loading Custom Packs at Runtime
 

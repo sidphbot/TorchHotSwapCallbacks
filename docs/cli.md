@@ -334,6 +334,48 @@ Options:
 
 Dashboard URL: `http://localhost:8421`
 
+## `hotcb scenario`
+
+Run policy pack scenario tests — short, reproducible training runs that demonstrate each autopilot rule firing.
+
+### `hotcb scenario list`
+
+List all available scenarios.
+
+```bash
+hotcb scenario list
+```
+
+### `hotcb scenario run`
+
+Run one or more scenarios headless or with the dashboard.
+
+```bash
+# Run a single scenario headless
+hotcb scenario run stability_nan
+
+# Run with live dashboard (autopilot annotations shown in cyan)
+hotcb scenario run stability_nan --dashboard
+
+# Run all scenarios
+hotcb scenario run --all
+
+# Run all scenarios for a specific pack
+hotcb scenario run --pack stability_basics
+```
+
+Options:
+- `--all` -- run all discovered scenarios
+- `--pack <name>` -- run all scenarios for a given policy pack
+- `--dashboard` -- launch the dashboard alongside the scenario
+- `--host <addr>` -- dashboard bind address (default: `0.0.0.0`)
+- `--port <int>` -- dashboard port (default: `8421`)
+- `--step-delay <float>` -- seconds between steps (default: `0` for headless, use `0.05`+ for dashboard)
+
+Each scenario reports pass/fail based on whether expected autopilot rules fired during the run.
+
+See [Scenario Catalog](scenarios.md) for all 12 scenarios across 5 policy packs.
+
 ## `hotcb demo`
 
 Launch synthetic training with the dashboard.
@@ -343,10 +385,14 @@ hotcb demo                              # simple synthetic training
 hotcb demo --golden                     # multi-task demo with rich metrics
 hotcb demo --autopilot ai_suggest       # with AI autopilot
 hotcb demo --autopilot suggest --key-metric val_loss
+
+# Run a named scenario with dashboard (alias for scenario run --dashboard)
+hotcb demo --scenario stability_nan
 ```
 
 Options:
 - `--golden` -- use multi-task golden demo (classification + reconstruction)
+- `--scenario <name>` -- run a named policy pack scenario with dashboard and cyan autopilot annotations
 - `--port <int>` -- dashboard port (default: `8421`)
 - `--autopilot {off,suggest,auto,ai_suggest,ai_auto}` -- autopilot mode (default: `off`)
 - `--key-metric <name>` -- primary metric for AI optimization (default: `val_loss`)
@@ -412,6 +458,66 @@ Run synthetic benchmarks or CIFAR-10 autopilot evaluation.
 hotcb bench run                         # synthetic benchmarks
 hotcb bench eval                        # CIFAR-10 autopilot evaluation
 ```
+
+## `hotcb research` — Research Graph
+
+Manage the structured hypothesis graph for training research.
+
+### Research streams
+
+```bash
+hotcb research stream list                    # list all streams
+hotcb research stream new "stability study"   # create a new stream
+hotcb research stream conclude <id> --conclusion "lr reduction confirmed"
+```
+
+### Observations and hypotheses
+
+```bash
+hotcb research observe "grad spikes at step 200" --stream stability --tags stability,gradients
+hotcb research hyp add --stream stability \
+  --condition "grad_norm > 10" \
+  --intervention '{"module":"opt","op":"set_params","params":{"lr_mult":0.5}}' \
+  --expected "loss recovers within 30 steps"
+hotcb research hyp list                       # list all hypotheses
+hotcb research hyp list --status confirmed    # filter by status
+hotcb research hyp show <id>                  # full detail
+hotcb research hyp test <id>                  # apply intervention, track outcome
+hotcb research hyp conclude <id> --status confirmed
+```
+
+### NN model
+
+```bash
+hotcb research model status                   # show model state (trained/untrained, sample count)
+hotcb research model retrain                  # retrain from accumulated data
+hotcb research model predict <hyp_id>         # P(improved) for a hypothesis
+```
+
+### Export / import
+
+```bash
+hotcb research export --out research_snapshot.json
+hotcb research import research_snapshot.json
+hotcb research merge <other_run_dir>          # merge from another run
+hotcb research export-recipe --out confirmed.recipe.jsonl
+```
+
+The exported recipe is compatible with `hotcb freeze --mode replay`.
+
+### Dashboard
+
+The Research tab shows an interactive Cytoscape.js tree:
+
+- **Root → Runs → Hypotheses → Evidence** tree structure
+- Click any **run node** to focus its metrics in the Metrics tab
+- **Hover** any node for details (confidence, NN score, status, deltas)
+- **Detail panel** (right side) shows full node info with action buttons (Test, Confirm, Refute, Acknowledge)
+- **Layout modes**: Hierarchical (default), Force-directed, Timeline
+- **Stream filter**: show only nodes from a specific research stream
+- **Auto-refresh**: graph updates every 8 seconds while tab is visible
+
+---
 
 ## Key-Value Parsing
 

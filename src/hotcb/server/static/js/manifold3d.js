@@ -139,7 +139,10 @@ function render3DPoints(ctx, points, interventionSteps) {
 
 async function fetchManifold() {
   var method = $('#manifoldMethod').value;
+  var container = document.getElementById('manifold-3d');
+  var _mfLoader = (!S.manifoldCtx && container) ? showLoader(container.parentElement, 'Computing ' + method.toUpperCase() + '\u2026') : null;
   var data = await api('GET', '/api/manifolds/metric?method=' + method + '&n_components=3');
+  hideLoader(_mfLoader);
   if (!data) return;
 
   if (!S.manifoldCtx) {

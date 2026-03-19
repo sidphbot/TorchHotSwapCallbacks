@@ -109,15 +109,25 @@ var mutationAnnotationPlugin = {
       var rec = ann.rec;
       var x = ann.x;
       var isHighlighted = (_highlightedMutationStep === ann.step);
+      var isAutopilot = (rec.source === 'autopilot');
+
+      // Color scheme: cyan for autopilot rules, orange for manual/other
+      var lineColor = isAutopilot
+        ? (isHighlighted ? 'rgba(0, 230, 230, 0.85)' : 'rgba(0, 200, 200, 0.4)')
+        : (isHighlighted ? 'rgba(255, 152, 51, 0.85)' : 'rgba(255, 152, 51, 0.35)');
+      var pillBg = isAutopilot
+        ? (isHighlighted ? 'rgba(0, 200, 200, 0.25)' : 'rgba(0, 200, 200, 0.12)')
+        : (isHighlighted ? 'rgba(255, 152, 51, 0.25)' : 'rgba(255, 152, 51, 0.12)');
+      var textColor = isAutopilot
+        ? (isHighlighted ? 'rgba(120, 255, 255, 1)' : 'rgba(120, 230, 230, 0.7)')
+        : (isHighlighted ? 'rgba(255, 200, 120, 1)' : 'rgba(255, 200, 120, 0.7)');
 
       // Draw vertical dashed line
       ctx.save();
       ctx.beginPath();
       ctx.setLineDash(isHighlighted ? [6, 3] : [4, 4]);
       ctx.lineWidth = isHighlighted ? 2 : 1;
-      ctx.strokeStyle = isHighlighted
-        ? 'rgba(255, 152, 51, 0.85)'
-        : 'rgba(255, 152, 51, 0.35)';
+      ctx.strokeStyle = lineColor;
       ctx.moveTo(x, top);
       ctx.lineTo(x, bottom);
       ctx.stroke();
@@ -125,6 +135,16 @@ var mutationAnnotationPlugin = {
 
       // Build compact label — split into multiple lines if needed
       var lines = [];
+
+      // Prepend rule_id label for autopilot annotations
+      if (isAutopilot && rec.rule_id) {
+        var ruleLabel = rec.rule_id;
+        // Strip pack prefix for brevity (e.g. "stability_basics.nan_guard" → "AP: nan_guard")
+        var dotIdx = ruleLabel.lastIndexOf('.');
+        if (dotIdx >= 0) ruleLabel = ruleLabel.substring(dotIdx + 1);
+        lines.push('AP: ' + ruleLabel);
+      }
+
       var annotParams = (rec.params && typeof rec.params === 'object') ? rec.params :
                         (rec.payload && typeof rec.payload === 'object') ? rec.payload : null;
       if (annotParams) {
@@ -157,9 +177,7 @@ var mutationAnnotationPlugin = {
           var labelY = baseY - (lines.length - 1 - li) * lineH;
 
           // Background pill
-          ctx.fillStyle = isHighlighted
-            ? 'rgba(255, 152, 51, 0.25)'
-            : 'rgba(255, 152, 51, 0.12)';
+          ctx.fillStyle = pillBg;
           ctx.beginPath();
           if (ctx.roundRect) {
             ctx.roundRect(labelX, labelY - lineH, textWidth + pad * 2, lineH + 2, 3);
@@ -169,9 +187,7 @@ var mutationAnnotationPlugin = {
           ctx.fill();
 
           // Text
-          ctx.fillStyle = isHighlighted
-            ? 'rgba(255, 200, 120, 1)'
-            : 'rgba(255, 200, 120, 0.7)';
+          ctx.fillStyle = textColor;
           ctx.textBaseline = 'bottom';
           ctx.fillText(text, labelX + pad, labelY);
         }

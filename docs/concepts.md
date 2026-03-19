@@ -128,8 +128,27 @@ The dashboard (`hotcb serve`) is a FastAPI app that provides real-time visualiza
 - **Command panel**: send optimizer/loss/callback commands from the browser
 - **Recipe editor**: view and edit the applied ledger
 - **Autopilot controls**: mode selector, rule configuration, AI reasoning panel
+- **Research graph**: interactive Cytoscape.js tree/mindmap — root "Experiment" node branches into discovered runs, each with hypotheses and evidence. Click any run node to focus its metrics in the Metrics tab. Hover for details (confidence, status, NN predictions).
+- **Compare tab**: select multiple runs for side-by-side metric comparison with per-run color coding
+- **Manifold tab**: 3D PCA/UMAP/t-SNE visualization of metric space and feature space
+- **Panel loading indicators**: every panel shows a loading spinner while fetching data — compare sidebar, compare chart, research graph, manifold, recipe editor, autopilot rules, and focus mode all display contextual loading messages
 
 The dashboard communicates with training via the filesystem (same JSONL files). It runs in a separate process — no shared memory or sockets needed.
+
+## Policy Pack Scenarios
+
+Scenarios are short, reproducible training runs that prove each policy pack rule works. Each scenario is a self-contained project under `scenarios/` following the same integration patterns as real external projects. Scenarios double as integration examples and build verification tests.
+
+```bash
+hotcb scenario list                          # list all 12 scenarios
+hotcb scenario run stability_nan             # headless run + verify
+hotcb demo --scenario stability_nan          # live dashboard with cyan autopilot annotations
+hotcb scenario run --all                     # run all headless
+```
+
+The dashboard color-codes annotations: **cyan** for autopilot-fired rules (labeled "AP: rule_name"), **orange** for manual mutations.
+
+See [Scenario Catalog](scenarios.md) for the full catalog of 12 scenarios across 5 packs.
 
 ## Autopilot
 
@@ -142,7 +161,7 @@ Condition-action rules that monitor metrics and fire when patterns are detected:
 - **Divergence**: metric rising sharply → reduce lr aggressively
 - **Overfitting**: val_loss rising while train_loss falls → increase weight_decay
 
-In `suggest` mode, proposals appear in the dashboard for human review. In `auto` mode, actions apply immediately.
+In `suggest` mode, proposals appear in the dashboard for human review. In `auto` mode, critical/high/medium confidence actions apply immediately; low confidence actions are proposed for review.
 
 ### AI autopilot (`ai_suggest` / `ai_auto`)
 

@@ -133,6 +133,8 @@ def create_app(
     from .autopilot import AutopilotEngine, create_router as autopilot_router_factory
     from .launcher import TrainingLauncher, create_router as launcher_router_factory
     from .ai_engine import LLMAutopilotEngine, AIConfig
+    from .research import create_router as research_router_factory
+    from ..research.engine import ResearchEngine
 
     # run_dir is immutable — set once at startup, never changed.
     # Keep the original CLI path for discovery; resolve for monitoring.
@@ -156,6 +158,8 @@ def create_app(
         run_dir=run_dir, mode="off", config=dashboard_config.autopilot,
     )
     training_launcher = TrainingLauncher(run_dir=cli_run_dir)
+    # Research engine uses cli_run_dir (parent) — eval writes snapshot there
+    research_engine = ResearchEngine(run_dir=cli_run_dir)
 
     # Initialize AI autopilot engine
     ai_engine = LLMAutopilotEngine(
@@ -211,6 +215,21 @@ def create_app(
                 manifold_engine.update_interventions(records)
             tailer.subscribe("applied", _manifold_applied_feed)
 
+        # Wire research engine to autopilot
+        research_engine.set_autopilot(autopilot_engine)
+
+        # Feed applied ledger into research engine (shadow tracking)
+        if "applied" in tailer._targets:
+            async def _research_applied_feed(ch: str, records: list) -> None:
+                for rec in records:
+                    step = rec.get("step")
+                    if step is not None:
+                        try:
+                            research_engine.on_mutation_applied(int(step), rec)
+                        except Exception:
+                            pass
+            tailer.subscribe("applied", _research_applied_feed)
+
         # Feed metrics into autopilot engine (async for AI mode support)
         if "metrics" in tailer._targets:
             async def _autopilot_feed(ch: str, records: list) -> None:
@@ -228,6 +247,17 @@ def create_app(
                             from dataclasses import asdict
                             action_data = [asdict(a) for a in actions]
                             await manager.broadcast("autopilot", action_data)
+                            # Auto-discover hypotheses from rule firings
+                            for a in actions:
+                                try:
+                                    research_engine.on_rule_fired(a, int(step))
+                                except Exception:
+                                    pass
+                        # Feed metrics into research engine
+                        try:
+                            research_engine.on_metrics(int(step), metrics)
+                        except Exception:
+                            pass
             tailer.subscribe("metrics", _autopilot_feed)
 
         _tailer_task = asyncio.create_task(tailer.run())
@@ -265,6 +295,7 @@ def create_app(
     app.state.manifold_engine = manifold_engine
     app.state.autopilot_engine = autopilot_engine
     app.state.ai_engine = ai_engine
+    app.state.research_engine = research_engine
     app.state.cb_registry = {}
 
     app.state.config = dashboard_config
@@ -285,6 +316,7 @@ def create_app(
     app.include_router(manifolds_router_factory(manifold_engine))
     app.include_router(autopilot_router_factory(autopilot_engine, ai_engine=ai_engine))
     app.include_router(launcher_router_factory(training_launcher))
+    app.include_router(research_router_factory(research_engine))
 
     # --- Feature snapshots endpoint ---
     @app.get("/api/features/snapshots")
@@ -470,6 +502,23 @@ def create_app(
         """Read applied ledger from an external run directory."""
         applied_path = os.path.join(dir, "hotcb.applied.jsonl")
         return {"records": _read_tail(applied_path, last_n)}
+
+    # --- Eval status endpoint (polled by frontend for live eval progress) ---
+    @app.get("/api/eval/status")
+    async def eval_status():
+        """Return current eval harness progress (if running)."""
+        # Check both cli_run_dir (parent) and resolved run_dir
+        for d in [cli_run_dir, run_dir]:
+            status_path = os.path.join(d, "hotcb.eval.status.json")
+            if os.path.exists(status_path):
+                try:
+                    with open(status_path) as f:
+                        data = json.load(f)
+                    data["active"] = True
+                    return data
+                except Exception:
+                    pass
+        return {"active": False}
 
     # --- UI mode endpoints ---
     _VALID_UI_MODES = {"engineer", "education", "vibe_coder"}

@@ -448,12 +448,26 @@ class AutopilotEngine:
         if self._mode == "off":
             return []
 
-        # Update metric history
+        # Inject step into metrics namespace so custom expressions can use it
+        metrics = {**metrics, "step": step}
+
+        # Update metric history (exclude synthetic 'step' key)
         for name, value in metrics.items():
-            self._metric_history[name].append(value)
+            if name != "step":
+                self._metric_history[name].append(value)
 
         # Compute health state
         self._update_health_state()
+
+        # Inject health-derived fields into metrics namespace for custom rules
+        if self._health_state is not None:
+            hs = self._health_state
+            if hasattr(hs, "multi_loss") and isinstance(hs.multi_loss, dict):
+                metrics["conflict_score"] = hs.multi_loss.get("conflict_score", 0)
+            if hasattr(hs, "numeric_stability") and isinstance(hs.numeric_stability, dict):
+                metrics["loss_cv"] = hs.numeric_stability.get("loss_cv", 0)
+            if hasattr(hs, "optimization_health") and isinstance(hs.optimization_health, dict):
+                metrics["grad_trend"] = hs.optimization_health.get("grad_trend", 0)
 
         # Collect fired rules with their condition descriptions
         fired: list[tuple[AutopilotRule, str]] = []
@@ -524,7 +538,7 @@ class AutopilotEngine:
                 else:
                     validated = self.validate_action(rule.action)
                     if validated is not None:
-                        self._apply_action(validated)
+                        self._apply_action(validated, rule_id=rule.rule_id)
                         self.record_mutation(step)
                     else:
                         action.status = "rejected"
@@ -578,9 +592,7 @@ class AutopilotEngine:
         if self._mode == "suggest":
             return "proposed"
         # mode == "auto"
-        if confidence == "high":
-            return "applied"
-        elif confidence == "medium":
+        if confidence in ("critical", "high", "medium"):
             return "applied"
         else:  # low
             return "proposed"
@@ -682,7 +694,7 @@ class AutopilotEngine:
         result["params"] = validated_params
         return result
 
-    def _apply_action(self, action_cmd: dict) -> None:
+    def _apply_action(self, action_cmd: dict, *, rule_id: str = "") -> None:
         """Write a command to the commands JSONL file.
 
         Resolves multiplier params (lr_mult, wd_mult) to absolute values
@@ -694,6 +706,8 @@ class AutopilotEngine:
         cmd = dict(action_cmd)  # copy
         cmd.setdefault("ts", time.time())
         cmd.setdefault("source", "autopilot")
+        if rule_id:
+            cmd["rule_id"] = rule_id
 
         # Resolve multiplier params to absolute values
         params = dict(cmd.get("params", {}))

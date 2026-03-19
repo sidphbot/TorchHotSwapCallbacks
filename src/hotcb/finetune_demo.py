@@ -74,7 +74,9 @@ def _finetune_training(
     kernel = HotKernel(run_dir=run_dir, debounce_steps=1, metrics_collector=mc, mutable_state=ms)
 
     # --- Recipe: scheduled commands written to commands.jsonl at trigger steps ---
-    recipe_schedule: dict = {
+    # If hotcb.eval.no_recipe sentinel exists, skip recipe injection (for eval baselines)
+    _skip_recipe = os.path.exists(os.path.join(run_dir, "hotcb.eval.no_recipe"))
+    recipe_schedule: dict = {} if _skip_recipe else {
         200: {"module": "opt", "op": "set_params", "params": {"lr": 2e-4},
               "source": "recipe"},
         400: {"module": "opt", "op": "set_params", "params": {"lr": 5e-5},

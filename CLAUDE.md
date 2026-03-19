@@ -65,7 +65,7 @@ The kernel and training process communicate through the filesystem (JSONL files)
 Unified per-parameter actuator model. Every controllable scalar/toggle/choice is a `HotcbActuator` with a closure-based `apply_fn` that captures the live object.
 
 Convenience constructors (each returns `List[HotcbActuator]`):
-- `optimizer_actuators(optimizer)` — lr, wd, betas from a torch optimizer
+- `optimizer_actuators(optimizer)` — lr, wd, betas (Adam), alpha/momentum (RMSProp) from a torch optimizer
 - `loss_actuators(weights_dict)` — FLOAT actuators that mutate the original dict
 - `data_actuators(dataset, attrs={...})` — maps named dataset attributes to actuators via `setattr` closures
 - `model_actuators(model, groups={...})` — freeze/unfreeze BOOL actuators per module group
@@ -90,7 +90,7 @@ FastAPI app (`app.py`) served via `hotcb serve`. Architecture:
 - **`ai_engine.py`**: `LLMAutopilotEngine` — LLM decision engine with `AIConfig`, `AIState`, cost tracking, multi-run state persistence (`hotcb.ai.state.json`)
 - **`ai_prompts.py`**: `TrendCompressor`, `build_context()`, `parse_ai_response()`, `ACTION_SCHEMA` — prompt assembly and response parsing for AI autopilot
 - **`launcher.py`**: Training launch/stop/reset from the dashboard
-- Static frontend: `server/static/` — vanilla JS (charts.js, controls.js, panels.js, websocket.js, state.js, init.js)
+- Static frontend: `server/static/` — vanilla JS (charts.js, controls.js, panels.js, websocket.js, state.js, init.js, research.js, manifold3d.js, tour.js, utils.js)
 
 ### Demos (`src/hotcb/demo.py`, `golden_demo.py`, `finetune_demo.py`)
 
@@ -129,9 +129,64 @@ Exposed at `GET /api/state/health`. Wired into autopilot evaluation and AI promp
 
 ### Policy packs (`src/hotcb/server/guidelines/`)
 
-5 shipped YAML policy packs: `stability_basics`, `multi_loss_assist`, `distillation_assist`, `plateau_recovery`, `finish_strong`. Each contains 4 rules with priority, bounds, suppress, and rollback_if DSL fields.
+5 shipped YAML policy packs: `stability_basics`, `multi_loss_assist`, `distillation_assist`, `plateau_recovery`, `finish_strong`. Each contains 4 rules with priority, bounds, suppress, and rollback_if DSL fields. `nan_guard` uses `nan_detected > 0` (flag-based, since MetricsCollector filters NaN values). Custom expressions have access to `step` and health-derived fields (`conflict_score`, `loss_cv`, `grad_trend`). Confidence levels: `critical`/`high`/`medium` auto-apply in `auto` mode; `low` is proposed only.
 
 Loaded via `AutopilotEngine.load_pack(name)`, managed via `/api/autopilot/packs/*` endpoints.
+
+### Research & Learning (`src/hotcb/research/`)
+
+Structured hypothesis graph for training research. Turns ad-hoc experiments into a formal observation → hypothesis → evidence pipeline with NN-powered outcome prediction.
+
+- **`types.py`**: `ObservationNode`, `HypothesisNode`, `EvidenceNode`, `ResearchEdge`, `ResearchStream`. Hypothesis status machine: proposed → testing → confirmed/refuted/inconclusive; discovered (auto from autopilot) → proposed.
+- **`graph.py`**: `ResearchGraph` — in-memory graph with JSONL event log persistence (`hotcb.research.jsonl`) and JSON snapshots. Cytoscape.js serialization via `to_cytoscape()`.
+- **`engine.py`**: `ResearchEngine` — orchestrator wired to AutopilotEngine and EffectTracker. Auto-creates "discovered" hypotheses from rule firings, creates evidence from completed effects. CLI/API operations: observe, hypothesize, refine, test, conclude.
+- **`export.py`**: Export/import/merge research graphs across runs.
+- **`recipe_gen.py`**: Confirmed hypotheses → recipe JSONL for replay.
+- **`learner/`**: NN module — `OutcomePredictor` (MLP 13→32→16→1), `InterventionFeature` extraction, JSONL-backed `TrainingDataset`, active learning on new effects. Pre-trained model shipped at `learner/pretrained/outcome_predictor.pt` (~7KB).
+- **Server**: `src/hotcb/server/research.py` — closure-based REST router (`/api/research/*`). Dashboard: Cytoscape.js Research tab with tree/mindmap visualization (root → runs → hypotheses → evidence). Hierarchical/force/timeline layouts, semantic zoom, node visual encoding (size=evidence, opacity=status, border=NN confidence). Click run nodes to focus in Metrics tab. Hover tooltips with node details.
+- **Dashboard loaders**: Reusable `showLoader(container, text)` / `hideLoader()` / `showInlineLoader()` system in `utils.js` + CSS `.panel-loader` / `.inline-loader`. Every panel that fetches data shows a loading indicator: Compare sidebar ("Discovering runs..."), Compare chart ("Loading metrics..."), Focus mode ("Loading {run}..."), Manifold ("Computing PCA/UMAP..."), Research graph ("Loading research graph..."), Recipe editor, Autopilot rules.
+- **CLI**: `hotcb research {stream,observe,hyp,model,export,import,merge,export-recipe}`
+- **Optional dep**: `hotcb[research]` → torch>=2.0 (for NN features; graph/engine work without torch)
+
+### Scenarios (`scenarios/`, `src/hotcb/scenarios/`)
+
+12 self-contained scenario tests (one per policy pack rule) that verify autopilot rules fire correctly. Each scenario is a directory under `scenarios/` with `train.py`, `scenario.yaml`, and `README.md`. Training scripts follow the same `train_fn(run_dir, max_steps, step_delay, stop_event)` contract as INTEGRATION.md.
+
+- `src/hotcb/scenarios/base.py` — `ScenarioConfig`, `ScenarioResult` dataclasses
+- `src/hotcb/scenarios/__init__.py` — `SCENARIO_REGISTRY`, `discover()`, `get()`, `list_scenarios()`
+- `src/hotcb/scenarios/runner.py` — `ScenarioRunner` with concurrent autopilot tailer thread + final drain
+
+CLI: `hotcb scenario list`, `hotcb scenario run <name>`, `hotcb demo --scenario <name>`.
+
+Dashboard annotations are color-coded: cyan for autopilot (`source === "autopilot"`), orange for manual. Autopilot commands include `rule_id` field.
+
+### Eval framework (`src/hotcb/eval/`)
+
+Controlled experiment harness for evaluating autopilot across real training tasks and conditions.
+
+- **`conditions.py`**: `EvalCondition` and `ContinuationCondition` dataclasses. 40+ conditions across datasets: MNIST, CIFAR-10, COCO (classification + SSDLite detection), ImageNet (MobileNetV2 paper-faithful + pretrained). Each condition defines hyperparameters, autopilot mode, and expected behavior (baseline, recovery, divergent, continuation).
+- **`tasks.py`**: `mnist_training`, `cifar10_training` — real PyTorch training with HotKernel + MetricsCollector + actuators.
+- **`tasks_imagenet.py`**: `imagenet_mobilenetv2_paper_training` — paper-faithful MobileNetV2 (Sandler et al. 2018): RMSProp lr=0.045, alpha=0.9, momentum=0.9, wd=4e-5, eps=1.0, ExponentialLR gamma=0.98, 300 epochs, batch 96, AMP + torch.compile. Also `imagenet_mobilenetv2_pretrained_validation`, continuation variants.
+- **`tasks_coco_detection.py`**: `coco_ssdlite_mobilenetv2_training` — SSDLite + MobileNetV2 backbone on COCO, target 22.1 mAP.
+- **`tasks_coco.py`**: COCO classification with MobileNetV2 (custom task, not from paper).
+- **`harness.py`**: `EvalHarness` — runs conditions, collects results.
+- **`report.py`**: `EvalReport` — generates CSV/JSON/LaTeX summaries.
+- **`datasets.py`**: Dataset loaders for MNIST, CIFAR-10, COCO, ImageNet with proper transforms.
+
+Checkpoint-aware training pattern: all real tasks support `*_with_checkpoints()` variants that save model/optimizer/scheduler/scaler/epoch state at configurable intervals, and `*_continuation_training()` variants that resume from checkpoint + apply mutation recipes.
+
+### Continuation tuning (`src/hotcb/routines/continuation/`)
+
+Branch from converged checkpoints, apply small mutations (lr_half, cosine_anneal, swa_tail, etc.), keep winners.
+
+- **`models.py`**: `ContinuationConfig`, `MutationRecipe`, `AnchorSpec`, `BranchSpec`, `BudgetSpec`, etc.
+- **`planner.py`**: `ContinuationPlanner` — generates branch plans from anchor checkpoints. Recipe families: DEFAULT (6), AGGRESSIVE (4), COMBO (4), MULTI_STAGE (4).
+- **`anchors.py`**: `AnchorSelector` — finds best checkpoint to branch from.
+- **`launcher.py`**: `ContinuationLauncher` — executes branches with HotKernel.
+- **`evaluator.py`**: `ContinuationEvaluator` — compares branch outcomes.
+- **`report.py`**: `ContinuationReport` — generates comparison reports.
+
+CLI: `hotcb continue {baseline,run,report}`.
 
 ### Guarantee envelope
 

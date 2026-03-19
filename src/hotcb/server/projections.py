@@ -19,14 +19,24 @@ import numpy as np
 log = logging.getLogger("hotcb.server.projections")
 
 # ---------------------------------------------------------------------------
-# Optional XGBoost import
+# Optional XGBoost — lazy import to avoid circular torch/scipy issues when
+# the server is started in the same process as a training loop.
 # ---------------------------------------------------------------------------
-try:
-    import xgboost as xgb
+HAS_XGB: bool | None = None
+_xgb = None
 
-    HAS_XGB = True
-except ImportError:  # pragma: no cover
-    HAS_XGB = False
+
+def _ensure_xgb():
+    """Lazy-load xgboost on first use.  Sets module-level HAS_XGB / _xgb."""
+    global HAS_XGB, _xgb
+    if HAS_XGB is not None:
+        return
+    try:
+        import xgboost as xgb
+        _xgb = xgb
+        HAS_XGB = True
+    except ImportError:
+        HAS_XGB = False
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -217,6 +227,7 @@ class ProjectionEngine:
     ) -> ForecastResult:
         """Predict a single metric *horizon* steps ahead."""
         prep = self._prepare(metric_name)
+        _ensure_xgb()
         if prep is None:
             return ForecastResult(
                 steps=[],
@@ -243,6 +254,7 @@ class ProjectionEngine:
         """Predict metric under hypothetical HP change."""
         prep = self._prepare(metric_name)
         if prep is None:
+            _ensure_xgb()
             return ForecastResult(
                 steps=[],
                 values=[],
@@ -269,6 +281,7 @@ class ProjectionEngine:
         mask = ~np.isnan(raw_arr)
         hp_mat = hp_mat[mask]
 
+        _ensure_xgb()
         if HAS_XGB:
             result = self._forecast_xgb(
                 metric_name, vals, steps, horizon,
@@ -304,18 +317,18 @@ class ProjectionEngine:
             )
 
         # Fit median model
-        model_med = xgb.XGBRegressor(
+        model_med = _xgb.XGBRegressor(
             n_estimators=100, max_depth=4, learning_rate=0.1,
             objective="reg:squarederror", verbosity=0,
         )
         model_med.fit(X, y)
 
         # Fit quantile models for confidence bands
-        model_lo = xgb.XGBRegressor(
+        model_lo = _xgb.XGBRegressor(
             n_estimators=100, max_depth=4, learning_rate=0.1,
             objective="reg:quantileerror", quantile_alpha=0.1, verbosity=0,
         )
-        model_hi = xgb.XGBRegressor(
+        model_hi = _xgb.XGBRegressor(
             n_estimators=100, max_depth=4, learning_rate=0.1,
             objective="reg:quantileerror", quantile_alpha=0.9, verbosity=0,
         )

@@ -87,3 +87,30 @@ hotcb launch --config multitask --autopilot ai_suggest --key-metric val_loss
 hotcb launch --config multitask --max-time 300 --autopilot ai_suggest  # 5-minute run
 hotcb launch --train-fn my_module:train --autopilot ai_auto --ai-budget 2.0
 ```
+
+## Explore policy pack scenarios
+
+Each policy pack ships with demoable scenarios — short training runs that show each rule firing:
+
+```bash
+hotcb scenario list                          # list all 12 scenarios
+hotcb scenario run stability_nan             # run one headless + verify
+hotcb demo --scenario stability_nan          # run with live dashboard (cyan annotations)
+hotcb scenario run --all                     # run all scenarios
+```
+
+Scenarios are self-contained integration examples under `scenarios/`. See [Scenario Catalog](docs/scenarios.md) for details.
+
+## Research graph
+
+The Research tab in the dashboard visualizes your experiment as an interactive tree: root → runs → hypotheses → evidence. Click any run node to focus its metrics.
+
+```bash
+hotcb research stream new "lr sensitivity study"
+hotcb research observe "grad spikes above 10 at step 200" --tags stability
+hotcb research hyp add --condition "grad_norm > 10" --expected "lr cut helps"
+hotcb research hyp test hyp_001               # apply intervention, track outcome
+hotcb research export-recipe --out confirmed.recipe.jsonl
+```
+
+Install with: `pip install "hotcb[research]"` for NN predictions, or use the graph/engine without torch.

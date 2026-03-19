@@ -83,6 +83,56 @@ def optimizer_actuators(
             current_value=pg["weight_decay"],
         ))
 
+    # --- alpha (RMSProp decay) ---
+    if "alpha" in pg:
+        _opt_ref = optimizer
+
+        def _apply_alpha(value: Any, env: dict, _opt=_opt_ref) -> ApplyResult:
+            try:
+                new_alpha = float(value)
+                for g in _opt.param_groups:
+                    g["alpha"] = new_alpha
+                return ApplyResult(success=True, detail={"alpha": new_alpha})
+            except Exception as exc:
+                return ApplyResult(success=False, error=str(exc))
+
+        actuators.append(HotcbActuator(
+            param_key="alpha",
+            type=ActuatorType.FLOAT,
+            apply_fn=_apply_alpha,
+            metrics_dict_name="alpha",
+            label="RMSProp Decay",
+            group="optimizer",
+            min_value=0.8,
+            max_value=0.999,
+            current_value=pg["alpha"],
+        ))
+
+    # --- momentum ---
+    if "momentum" in pg and pg["momentum"] > 0:
+        _opt_ref = optimizer
+
+        def _apply_momentum(value: Any, env: dict, _opt=_opt_ref) -> ApplyResult:
+            try:
+                new_mom = float(value)
+                for g in _opt.param_groups:
+                    g["momentum"] = new_mom
+                return ApplyResult(success=True, detail={"momentum": new_mom})
+            except Exception as exc:
+                return ApplyResult(success=False, error=str(exc))
+
+        actuators.append(HotcbActuator(
+            param_key="momentum",
+            type=ActuatorType.FLOAT,
+            apply_fn=_apply_momentum,
+            metrics_dict_name="momentum",
+            label="Momentum",
+            group="optimizer",
+            min_value=0.0,
+            max_value=0.99,
+            current_value=pg["momentum"],
+        ))
+
     # --- betas ---
     if "betas" in pg:
         _opt_ref = optimizer

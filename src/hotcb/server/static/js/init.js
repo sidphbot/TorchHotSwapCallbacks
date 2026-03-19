@@ -188,6 +188,9 @@ async function initialLoad() {
   if (shouldShowTour()) {
     setTimeout(startTour, 2000);
   }
+
+  // Signal that initial load is done (prevents eval auto-focus race condition)
+  window._initialLoadDone = true;
 }
 
 /* ================================================================ */

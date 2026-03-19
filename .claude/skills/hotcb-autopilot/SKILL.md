@@ -398,10 +398,34 @@ GET  /api/metrics/history       — recent metric records (?last_n=500)
 GET  /api/applied/history       — applied mutations (?last_n=200)
 GET  /api/status                — run status (freeze, files)
 GET  /api/health                — server health
+GET  /api/state/health          — training health state (numeric stability, grad health, conflict scores, derived labels)
 GET  /api/train/status          — training thread status
 POST /api/opt/set               — set optimizer params {"params": {"lr": 0.001}}
 POST /api/loss/set              — set loss params {"params": {"weight_a": 0.7}}
 GET  /api/autopilot/status      — autopilot state
 GET  /api/autopilot/ai/status   — AI autopilot state (cost, key_metric, etc.)
 GET  /api/autopilot/ai/history  — AI decision history with reasoning
+GET  /api/research/graph        — research hypothesis graph (Cytoscape.js format)
+GET  /api/research/stats        — research graph summary statistics
+GET  /api/research/nn/status    — NN outcome predictor status
+GET  /api/runs/discover         — list discovered run directories
 ```
+
+## Research Graph Integration
+
+When autopilot is active, rule firings auto-create "discovered" hypothesis nodes in the research graph. Evidence is collected automatically from EffectTracker outcomes. You can use the research API to inspect hypotheses and their outcomes:
+
+```bash
+# Check research graph stats
+curl -s http://localhost:8421/api/research/stats | python3 -m json.tool
+
+# List hypotheses (filter by status)
+curl -s http://localhost:8421/api/research/hypotheses?status=confirmed | python3 -m json.tool
+
+# NN outcome prediction for a proposed intervention
+curl -s -X POST http://localhost:8421/api/research/nn/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"intervention": {"module":"opt","op":"set_params","params":{"lr":0.0005}}, "context": {}}'
+```
+
+The dashboard Research tab shows an interactive tree (root → runs → hypotheses → evidence). Run nodes are clickable to focus their metrics in the Metrics tab.

@@ -51,10 +51,12 @@ The observability layer computes `TrainingHealthState` from raw metric history. 
 
 | Signal | Source | What it detects |
 |--------|--------|-----------------|
-| Numeric stability | All metrics | NaN count, Inf count, loss spikes (value > 3x EMA) |
+| Numeric stability | All metrics | NaN count, Inf count, loss spikes (value > 3x EMA), `nan_detected` flag |
 | Gradient health | `grad_norm` metric | Norm trend (rising/flat/falling), gradient clipping rate |
 | Multi-loss conflict | `*_loss` metrics | Per-loss trend slopes, dominance ratios, detrended cross-correlation conflict score |
 | Loss trend | Primary loss | Total loss trend direction, plateau score, oscillation score |
+
+Health-derived fields (`conflict_score`, `loss_cv`, `grad_trend`) are automatically injected into the custom expression evaluator namespace, making them available to policy pack rule expressions without requiring explicit metric logging.
 
 **Derived labels** (attached to health state):
 
@@ -121,7 +123,7 @@ Actions are never auto-applied regardless of confidence level.
 
 ### Mode 2: `auto`
 
-Rule-based auto-apply mode. High and medium confidence actions are applied automatically. Low confidence actions are proposed for human review. All actions pass through validation (bounds check, type check) and mutation budget enforcement before application.
+Rule-based auto-apply mode. Critical, high, and medium confidence actions are applied automatically. Low confidence actions are proposed for human review. All actions pass through validation (bounds check, type check) and mutation budget enforcement before application.
 
 ### Mode 3: `ai_suggest`
 
@@ -181,6 +183,7 @@ metrics (each step)
                     |
                     v
             [Write to hotcb.applied.jsonl (ledger)]
+            - Includes rule_id and source="autopilot" for autopilot-applied actions
 ```
 
 ---
@@ -236,7 +239,31 @@ Env vars: `HOTCB_DIVERGENCE_THRESHOLD`, `HOTCB_RATIO_THRESHOLD`, `HOTCB_AI_MIN_I
 
 ---
 
+## Research Integration
+
+When the research module is active, the autopilot automatically creates "discovered" hypothesis nodes in the research graph whenever a rule fires:
+
+- **Auto-discovery**: `ResearchEngine.on_rule_fired(action, step)` creates a `HypothesisNode(status="discovered", source="auto_rule:{rule_id}")`. Deduplicates by `(condition, intervention.params)`.
+- **Evidence collection**: `ResearchEngine.on_effect_completed(effect, step)` creates `EvidenceNode` from EffectTracker outcomes, updates hypothesis confidence as `supports / (supports + contradicts)`.
+- **NN predictions**: When `nn_mode=True`, the autopilot can query `OutcomePredictor.predict(intervention, context)` before applying an action, adding NN confidence as a signal.
+
+The Research tab in the dashboard shows all autopilot-created hypotheses alongside manually created ones in the interactive tree visualization.
+
+## Rule Calibration (Planned)
+
+The 38 numeric knobs across all 5 policy packs (thresholds, multipliers, windows, cooldowns) can be auto-tuned via Bayesian optimization over scenario outcomes:
+
+```bash
+hotcb autopilot calibrate --pack stability_basics --trials 100
+hotcb autopilot calibrate --compare           # original vs calibrated thresholds
+```
+
+This reuses the tune module's Optuna infrastructure (TPE sampler, segment scoring, EMA-based recipe evolution). See the `rule-calibration` stream in STREAMS.md.
+
+---
+
 ## Related Documentation
 
 - [Policy Pack Reference](policy_packs.md) -- rule catalog, YAML DSL, custom authoring
+- [Scenario Catalog](scenarios.md) -- 12 demoable scenario tests for all 5 policy packs
 - [Guarantee Envelope](guarantee_envelope.md) -- what autopilot guarantees and does not guarantee

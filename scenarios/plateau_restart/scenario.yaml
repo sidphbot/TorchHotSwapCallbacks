@@ -1,0 +1,5 @@
+name: plateau_restart
+pack: plateau_recovery
+max_steps: 200
+expected_rules:
+  - plateau_recovery.cosine_restart

@@ -376,3 +376,104 @@ hotcb serve --dir ./runs/exp1 --autopilot ai_suggest
 ```
 
 Dashboard: `http://localhost:8421`
+
+## Research Graph
+
+hotcb includes a structured hypothesis graph for training research — turn ad-hoc "try X, see what happens" into formal observations, hypotheses, and evidence with NN-powered outcome predictions.
+
+```bash
+pip install "hotcb[research]"               # adds torch for NN features (graph works without it)
+
+# Create a research stream and record observations
+hotcb --dir <run_dir> research stream new "lr sensitivity study"
+hotcb --dir <run_dir> research observe "grad spikes above 10 at step 200" --tags stability
+
+# Add and test hypotheses
+hotcb --dir <run_dir> research hyp add \
+  --condition "grad_norm > 10" \
+  --intervention '{"module":"opt","op":"set_params","params":{"lr_mult":0.5}}' \
+  --expected "loss recovers within 30 steps"
+hotcb --dir <run_dir> research hyp test hyp_001
+
+# Export confirmed hypotheses as a replay recipe
+hotcb --dir <run_dir> research export-recipe --out confirmed.recipe.jsonl
+```
+
+When autopilot is active (`suggest`/`auto`/`ai_*`), rule firings auto-create "discovered" hypothesis nodes. Evidence is collected automatically from `EffectTracker` outcomes.
+
+The dashboard Research tab shows an interactive tree: root → runs → hypotheses → evidence. Click any run node to focus its metrics in the Metrics tab.
+
+## Checkpoint-Aware Training
+
+For long training runs, save checkpoints that include all state needed for exact resumption:
+
+```python
+def train_with_checkpoints(run_dir, max_steps, step_delay, stop_event,
+                           checkpoint_every=10, checkpoint_dir=None):
+    checkpoint_dir = checkpoint_dir or os.path.join(run_dir, "checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    model = build_model()
+    optimizer = torch.optim.RMSprop(model.parameters(), lr=0.045, alpha=0.9, momentum=0.9)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.98)
+    scaler = torch.amp.GradScaler('cuda')
+
+    mc = MetricsCollector(os.path.join(run_dir, "hotcb.metrics.jsonl"))
+    kernel = HotKernel(run_dir=run_dir, debounce_steps=10, metrics_collector=mc)
+
+    for epoch in range(num_epochs):
+        for batch in dataloader:
+            # ... train step with AMP ...
+            kernel.apply(env, events=["train_step_end"])
+
+        scheduler.step()
+
+        if (epoch + 1) % checkpoint_every == 0:
+            torch.save({
+                "epoch": epoch, "global_step": global_step,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "scaler_state_dict": scaler.state_dict(),
+                "best_metrics": best_metrics,
+            }, os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch+1}.pt"))
+```
+
+## Continuation Training (Resume from Checkpoint)
+
+Resume from a converged checkpoint and apply mutation recipes (lr changes, SWA, etc.):
+
+```python
+def continuation_training(run_dir, max_steps, step_delay, stop_event,
+                          checkpoint_path=None, extra_epochs=10, recipe=None):
+    ckpt = torch.load(checkpoint_path, weights_only=False)
+    model = build_model()
+    model.load_state_dict(ckpt["model_state_dict"])
+    optimizer = rebuild_optimizer(model)
+    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+
+    # Apply mutation recipe (e.g., halve lr, enable SWA)
+    if recipe:
+        for k, v in recipe.items():
+            if k == "lr":
+                for pg in optimizer.param_groups:
+                    pg["lr"] = float(v)
+
+    mc = MetricsCollector(os.path.join(run_dir, "hotcb.metrics.jsonl"))
+    kernel = HotKernel(run_dir=run_dir, debounce_steps=10, metrics_collector=mc)
+    # ... training loop continues from checkpoint epoch ...
+```
+
+Use with `hotcb continue run` CLI or the `ContinuationLauncher` API.
+
+## Scenario Examples
+
+The `scenarios/` directory contains 12 self-contained integration examples — each is a short training run that demonstrates a policy pack rule firing. They follow the same Option B pattern shown above.
+
+```bash
+hotcb scenario list                          # list all scenarios
+hotcb scenario run stability_nan             # run one headless
+hotcb demo --scenario stability_nan          # run with live dashboard
+```
+
+See [docs/scenarios.md](docs/scenarios.md) for the full catalog.

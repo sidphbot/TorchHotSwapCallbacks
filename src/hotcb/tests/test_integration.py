@@ -63,16 +63,17 @@ def test_demo_with_policy_pack(tmp_path):
     count = engine.load_pack("stability_basics")
     assert count > 0, "stability_basics should have rules"
 
-    # Feed NaN loss — should trigger nan_guard rule
+    # Feed nan_detected flag — should trigger nan_guard rule
     actions = engine.evaluate(step=100, metrics={
-        "train_loss": float("nan"),
+        "train_loss": 1.0,
         "val_loss": 1.0,
         "grad_norm": 1.0,
+        "nan_detected": 1,
     })
 
-    # The nan_guard rule uses custom condition with math.isnan
+    # The nan_guard rule uses custom condition with nan_detected > 0
     nan_actions = [a for a in actions if "nan" in a.rule_id.lower() or "nan" in a.condition_met.lower()]
-    assert len(nan_actions) > 0, "NaN guard rule should fire on NaN train_loss"
+    assert len(nan_actions) > 0, "NaN guard rule should fire on nan_detected flag"
     assert nan_actions[0].status == "proposed"  # suggest mode
 
 

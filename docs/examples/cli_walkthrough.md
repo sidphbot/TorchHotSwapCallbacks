@@ -264,6 +264,31 @@ hotcb --dir runs/prod freeze --mode off
 
 ---
 
+## 15. Run policy pack scenario tests
+
+Verify that autopilot rules fire correctly using built-in scenarios:
+
+```bash
+# List available scenarios
+hotcb scenario list
+
+# Run a single scenario headless — verifies the expected rule fires
+hotcb scenario run stability_nan
+
+# Run with live dashboard (autopilot annotations in cyan)
+hotcb demo --scenario stability_nan
+
+# Run all scenarios (build verification)
+hotcb scenario run --all
+
+# Run all scenarios for a specific pack
+hotcb scenario run --pack stability_basics
+```
+
+Each scenario is a self-contained training run under `scenarios/` that demonstrates one autopilot rule. See [Scenario Catalog](../scenarios.md) for the full catalog.
+
+---
+
 ## Full artifact reference
 
 | File | Written by | Purpose |

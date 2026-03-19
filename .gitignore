@@ -6,8 +6,32 @@ dist/
 .eggs/
 .idea/
 .claude/worktrees/
-.claude/setting*
+.claude/settings.local.json
 lightning_logs/
-data/*
+
+# Data directories (download via scripts/download_data.py)
+data/
+datasets/
+
+# Run output directories
+runs/
+eval_output/
+*.metrics.jsonl
+*.applied.jsonl
+
+# Scenario checkpoints (generate via scripts/create_checkpoints.py)
+scenarios/checkpoints/
+
+# Model artifacts (user checkpoints, not shipped models)
+*.pt
+*.pth
+*.ckpt
+# Exception: shipped pretrained research model
+!src/hotcb/research/learner/pretrained/outcome_predictor.pt
+
+# Coverage
+.coverage
+htmlcov/
+
 # (optional) If you use pip editable installs, also ignore:
 pip-wheel-metadata/

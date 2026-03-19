@@ -1,0 +1,5 @@
+name: multi_loss_instability
+pack: multi_loss_assist
+max_steps: 100
+expected_rules:
+  - multi_loss_assist.aux_instability_rollback

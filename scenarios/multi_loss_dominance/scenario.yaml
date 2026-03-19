@@ -1,0 +1,5 @@
+name: multi_loss_dominance
+pack: multi_loss_assist
+max_steps: 150
+expected_rules:
+  - multi_loss_assist.loss_ratio_target

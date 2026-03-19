@@ -59,7 +59,7 @@ When all envelope conditions are met, the autopilot provides these guarantees:
 
 ### Stability Interventions
 
-- **NaN/Inf guard**: Loss values that are NaN or Inf trigger immediate LR reduction (via `stability_basics.nan_guard`)
+- **NaN/Inf guard**: NaN or Inf loss values are detected via the `nan_detected` metric flag and trigger immediate LR reduction (via `stability_basics.nan_guard`)
 - **Spike recovery**: Sharp loss increases (>threshold in N steps) trigger graduated LR reduction
 - **Gradient spike clip**: Extreme gradient norms trigger LR reduction to prevent divergence
 
@@ -113,3 +113,9 @@ AI multi-run memory (`hotcb.ai.state.json`) carries learnings across runs, but i
 ### Safe Behavior Beyond Actuator Bounds
 
 If actuator bounds are misconfigured (e.g., allowing LR values that cause numeric overflow), the autopilot will apply values within those bounds even if they are unsafe. Bounds are the user's responsibility and define the autopilot's operating envelope.
+
+---
+
+## Validation via Scenarios
+
+All 5 policy packs are validated by 12 built-in scenarios — short, reproducible training runs that verify each rule fires correctly under its expected conditions. Run `hotcb scenario run --all` to verify the full envelope. See [Scenario Catalog](scenarios.md) for details.

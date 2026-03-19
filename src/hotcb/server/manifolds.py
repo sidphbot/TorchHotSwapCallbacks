@@ -19,27 +19,34 @@ import numpy as np
 log = logging.getLogger("hotcb.server.manifolds")
 
 # ---------------------------------------------------------------------------
-# Optional backend probing
+# Optional backend probing — lazy to avoid scipy/torch circular import when
+# server runs in the same process as a training loop.
 # ---------------------------------------------------------------------------
 
-_HAS_UMAP = False
-_HAS_TSNE = False
+_HAS_UMAP: Optional[bool] = None
+_HAS_TSNE: Optional[bool] = None
 
-try:
-    import umap as _umap  # noqa: F401
-    _HAS_UMAP = True
-except ImportError:
-    pass
 
-try:
-    from sklearn.manifold import TSNE as _TSNE  # noqa: F401
-    _HAS_TSNE = True
-except ImportError:
-    pass
+def _ensure_manifold_deps():
+    """Lazy-probe for umap/tsne on first use."""
+    global _HAS_UMAP, _HAS_TSNE
+    if _HAS_UMAP is not None:
+        return
+    try:
+        import umap as _umap  # noqa: F811
+        _HAS_UMAP = True
+    except ImportError:
+        _HAS_UMAP = False
+    try:
+        from sklearn.manifold import TSNE as _TSNE  # noqa: F811
+        _HAS_TSNE = True
+    except ImportError:
+        _HAS_TSNE = False
 
 
 def available_methods() -> List[str]:
     """Return list of dimensionality-reduction methods available at runtime."""
+    _ensure_manifold_deps()
     methods = ["pca"]
     if _HAS_UMAP:
         methods.append("umap")

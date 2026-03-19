@@ -1,0 +1,6 @@
+name: distill_warmup
+pack: distillation_assist
+max_steps: 250
+framework: bare
+expected_rules:
+  - distillation_assist.summary_first_warmup

@@ -4,11 +4,46 @@ repo_name: sidphbot/hotcb
 
 theme:
   name: material
+  palette:
+    - scheme: slate
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
   features:
     - navigation.tabs
     - navigation.sections
+    - navigation.expand
+    - navigation.top
     - content.code.copy
     - content.code.annotate
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.mark
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
 
 plugins:
   - search
@@ -32,6 +67,15 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Concepts: concepts.md
+  - Features:
+      - Autopilot: autopilot.md
+      - Policy Packs: policy_packs.md
+      - Continuation Tuning: features/continuation.md
+      - Guarantee Envelope: guarantee_envelope.md
+      - Scenarios: scenarios.md
+  - Results:
+      - Continuation Results: results/continuation.md
+      - Policy Improvements: results/policies.md
   - CLI Reference: cli.md
   - Formats: formats.md
   - Replay: replay.md
@@ -49,4 +93,3 @@ nav:
       - Loader: api/loader.md
   - Examples:
       - CLI Walkthrough: examples/cli_walkthrough.md
-      - Custom Callback: examples/custom_callback_example.py

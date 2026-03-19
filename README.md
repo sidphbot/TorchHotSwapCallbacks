@@ -29,7 +29,8 @@ In the video you can see a model distillation run being balanced for classificat
 
 Plus:
 
-- **Dashboard** (`hotcb serve`): live metric charts, command panel, recipe editor, autopilot controls
+- **Dashboard** (`hotcb serve`): live metric charts with per-panel loading indicators, command panel, recipe editor, autopilot controls, research graph (Cytoscape.js tree/mindmap)
+- **Research graph**: interactive experiment tree — root → runs → hypotheses → evidence. Click any run node to focus its metrics. Hover for details. NN-powered outcome prediction.
 - **Autopilot**: rule-based and AI-driven training optimization — plateau/divergence/overfitting detection with automatic or LLM-guided intervention
 - **AI Autopilot** (`hotcb[ai]`): LLM reads compressed metric trends, analyzes alerts, and proposes/applies hotcb commands — with budget caps, safety guards, and multi-run memory
 - **Programmatic launch API** (`hotcb.launch`): start training + dashboard + autopilot in one call from notebooks/scripts
@@ -206,7 +207,18 @@ hotcb demo --autopilot ai_auto      # LLM-driven, auto-applies with safety guard
 
 Open `http://localhost:8421` to see live charts, send commands, and monitor autopilot decisions.
 
-### 5. Programmatic launch (notebooks / scripts)
+### 5. Explore policy pack scenarios
+
+```bash
+hotcb scenario list                          # list all 12 scenarios
+hotcb scenario run stability_nan             # headless run + verify
+hotcb demo --scenario stability_nan          # live dashboard with cyan annotations
+hotcb scenario run --all                     # run all scenarios
+```
+
+Each scenario is a short training run proving a specific autopilot rule fires correctly. Scenarios double as integration examples — see `scenarios/` and [Scenario Catalog](docs/scenarios.md).
+
+### 6. Programmatic launch (notebooks / scripts)
 
 ```python
 from hotcb.launch import launch
@@ -225,7 +237,7 @@ handle.set_param(lr=0.0005)         # send live commands
 handle.stop()                       # stop early
 ```
 
-### 6. One-command launch (CLI)
+### 7. One-command launch (CLI)
 
 ```bash
 hotcb launch --config multitask --autopilot ai_suggest --key-metric val_loss --max-steps 1000
@@ -233,7 +245,7 @@ hotcb launch --config multitask --autopilot ai_suggest --max-time 300  # 5-minut
 hotcb launch --train-fn my_module:train --autopilot ai_auto --ai-budget 2.0
 ```
 
-### 7. Enable online tuning (optional)
+### 8. Enable online tuning (optional)
 
 ```bash
 # Register actuators in your training script (see docs/modules/hottune.md)
@@ -265,6 +277,10 @@ hotcb --dir runs/exp1 tune status
 | `hotcb.features.jsonl` | Activation capture data (optional) |
 | `hotcb.run.json` | Run metadata (config, seed, timestamps) |
 | `hotcb.ai.state.json` | AI autopilot state (key metric, run history, learnings) |
+| `hotcb.research.jsonl` | Research event log (hypothesis/evidence creation, transitions) |
+| `hotcb.research.json` | Research graph snapshot (fast loading) |
+| `hotcb.research.training_data.jsonl` | NN learner training data |
+| `hotcb.research.recipe.jsonl` | Confirmed hypotheses exported as replay recipe |
 
 ---
 
@@ -416,7 +432,7 @@ curl -X POST http://localhost:8421/api/autopilot/pack/load \
 | `ai_auto` | LLM-driven: proposes and auto-applies with safety guards |
 
 **Policy packs** — reusable YAML rule bundles for common scenarios:
-- `stability_basics` — NaN guard, gradient spike clip, loss spike recovery
+- `stability_basics` — NaN detection guard, gradient spike clip, loss spike recovery
 - `multi_loss_assist` — auxiliary conflict reduction, loss ratio targeting
 - `distillation_assist` — distillation warmup, spatial ramp, temperature guard
 - `plateau_recovery` — stagnation detection, cosine restart, conservative finish
@@ -435,6 +451,70 @@ For details, see:
 - [Autopilot Architecture](docs/autopilot.md) — 3-layer design, modes, state flow, configuration
 - [Policy Pack Reference](docs/policy_packs.md) — pack catalog, YAML DSL, custom rule authoring
 - [Guarantee Envelope](docs/guarantee_envelope.md) — what the autopilot guarantees and does not guarantee
+
+## Research Graph
+
+The Research tab provides a structured hypothesis graph for training experiments:
+
+- **Tree/mindmap visualization**: Root "Experiment" node branches into discovered runs, each with hypotheses and evidence nodes
+- **Click-to-focus**: Click any run node to load its metrics into the Metrics tab
+- **Hover tooltips**: Hover nodes for confidence, status, NN predictions, and metric deltas
+- **Auto-discovery**: Autopilot rule firings auto-create "discovered" hypothesis nodes
+- **NN predictions**: Small pre-trained MLP predicts intervention outcomes (optional `hotcb[research]`)
+- **Export**: Confirmed hypotheses → recipe JSONL for deterministic replay
+
+```bash
+hotcb research stream list                    # list research streams
+hotcb research observe "grad spikes at step 200" --tags stability
+hotcb research hyp add --condition "grad_norm > 10" --expected "lr cut recovers"
+hotcb research hyp test hyp_001               # generate intervention, track outcome
+hotcb research export-recipe --out confirmed.recipe.jsonl
+```
+
+## Continuation Tuning
+
+Branch from converged checkpoints and apply small mutations to push beyond baseline accuracy:
+
+```bash
+# Run baseline training with checkpoints
+hotcb continue baseline --task cifar10 --epochs 50
+
+# Run continuation branches from best checkpoint
+hotcb continue run --task cifar10 --recipes lr_half,cosine_anneal,swa_tail
+
+# Generate comparison report
+hotcb continue report --task cifar10
+```
+
+18 built-in mutation recipes across 4 families (default, aggressive, combo, multi-stage). Works with any checkpoint-aware training task (MNIST, CIFAR-10, ImageNet, COCO).
+
+## Eval Framework
+
+Controlled experiments comparing autopilot conditions across real training:
+
+```bash
+# Run eval conditions
+hotcb eval --task mnist --conditions baseline,high_lr_auto,divergent
+
+# Paper-faithful MobileNetV2 from-scratch training (Sandler et al. 2018)
+hotcb eval --task imagenet_mobilenetv2_paper --condition paper_baseline
+
+# SSDLite + MobileNetV2 COCO detection (target 22.1 mAP)
+hotcb eval --task coco_detection --condition detection_baseline
+```
+
+40+ conditions across MNIST, CIFAR-10, COCO (classification + detection), and ImageNet. Each condition tests a specific autopilot behavior: baseline, recovery from perturbation, emergency stabilization, or continuation tuning.
+
+## Data & Checkpoints
+
+For demos that use real datasets (MNIST, CIFAR-10), download data first:
+
+```bash
+python scripts/download_data.py               # downloads to data/ (gitignored)
+python scripts/create_checkpoints.py          # generates scenarios/checkpoints/ (gitignored)
+```
+
+Data directories (`data/`, `runs/`, `eval_output/`, `scenarios/checkpoints/`) are gitignored. Pretrained model weights (`.pt`, `.pth`) are also gitignored except for the shipped research model.
 
 ## Safety
 
@@ -455,7 +535,9 @@ For details, see:
 - [Formats](docs/formats.md) — JSONL, JSON, and YAML schemas
 - Modules: [cb](docs/modules/cb.md) | [opt](docs/modules/hotopt.md) | [loss](docs/modules/hotloss.md) | [tune](docs/modules/hottune.md)
 - Examples: [Lightning](docs/examples/lightning_example.py) | [HF](docs/examples/hf_example.py) | [Bare PyTorch](docs/examples/bare_torch_example.py) | [Custom callback](docs/examples/custom_callback_example.py) | [Adjust overlay](docs/examples/adjust_overlay.yaml)
+- [Scenario Catalog](docs/scenarios.md) — 12 demoable scenario tests across 5 policy packs
 - [CLI Walkthrough](docs/examples/cli_walkthrough.md) — full live-control session from init to replay
+- Research: `hotcb research --help` — structured hypothesis graph, NN learner, recipe export
 
 ---
 

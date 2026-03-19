@@ -227,9 +227,9 @@ class TestPackContents:
     def test_stability_nan_guard_fires(self, tmp_dir):
         engine = AutopilotEngine(run_dir=tmp_dir, mode="suggest")
         engine.load_pack("stability_basics")
-        actions = engine.evaluate(step=100, metrics={"train_loss": float("nan")})
+        actions = engine.evaluate(step=100, metrics={"train_loss": 0.5, "nan_detected": 1})
         nan_actions = [a for a in actions if "nan" in a.rule_id.lower() or "nan" in a.condition_met.lower()]
-        assert len(nan_actions) > 0, "NaN guard should fire on NaN loss"
+        assert len(nan_actions) > 0, "NaN guard should fire on nan_detected flag"
 
     def test_stability_grad_spike_fires(self, tmp_dir):
         engine = AutopilotEngine(run_dir=tmp_dir, mode="suggest")

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>hotcb Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3/dist/cytoscape.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/css/dashboard.css">
@@ -23,6 +24,7 @@
       <span id="wsLabel">connecting</span>
     </div>
     <div class="run-selector" id="runSelector"></div>
+    <span id="focusedRunHeader" style="display:none;font-size:10px;font-weight:700;color:var(--cyan);background:rgba(0,212,170,0.1);padding:2px 8px;border-radius:3px;margin-right:8px;font-family:var(--font-mono)"></span>
     <div class="step-counter" id="stepCounter">
       <span class="step-label">step</span>
       <span id="stepValue">--</span>
@@ -68,6 +70,7 @@
       <div class="tab" data-tab="autopilot-rules">Autopilot</div>
       <div class="tab" data-tab="config-wizard">Config</div>
       <div class="tab" data-tab="compare">Compare</div>
+      <div class="tab" data-tab="research">Research</div>
     </div>
 
     <!-- TAB: Metrics -->
@@ -307,7 +310,7 @@
           <div id="compareRunList" style="display:flex;flex-direction:column;gap:4px;"></div>
         </div>
         <!-- Comparison chart -->
-        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative;">
           <div style="flex:1;position:relative;min-height:0;padding:6px;">
             <canvas id="compareChart"></canvas>
             <!-- Run info overlay (visible in zoom mode) -->
@@ -318,7 +321,51 @@
         </div>
       </div>
     </div>
-  </div>
+
+    <!-- TAB: Research -->
+    <div class="tab-content" data-tab="research">
+      <div class="chart-toolbar">
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span style="font-size:10px;color:var(--text-muted)">Research Graph</span>
+          <select class="header-select" id="researchStreamFilter" style="width:140px;font-size:9px">
+            <option value="">All streams</option>
+          </select>
+          <select class="header-select" id="researchLayout" style="width:90px;font-size:9px">
+            <option value="hierarchical">Hierarchical</option>
+            <option value="force">Force</option>
+            <option value="timeline">Timeline</option>
+          </select>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-sm" id="btnResearchRefresh">Refresh</button>
+          <button class="btn btn-sm btn-accent" id="btnResearchExportRecipe">Export Recipe</button>
+        </div>
+      </div>
+      <div id="evalProgressBanner" style="display:none;padding:6px 10px;font-size:10px;font-family:var(--font-mono);background:rgba(0,188,212,0.08);border-bottom:1px solid rgba(0,188,212,0.25);display:flex;align-items:center;gap:8px;">
+        <span id="evalProgressText" style="color:var(--cyan);font-weight:600"></span>
+        <div style="flex:1;height:4px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden">
+          <div id="evalProgressBar" style="height:100%;background:var(--cyan);border-radius:2px;transition:width 0.5s;width:0%"></div>
+        </div>
+        <span id="evalRunningLabel" style="color:var(--text-muted);font-size:9px"></span>
+      </div>
+      <div id="researchContamBanner" style="display:none;padding:4px 8px;font-size:10px;font-weight:700;color:#ff6b6b;background:rgba(255,107,107,0.1);border-bottom:1px solid rgba(255,107,107,0.3);"></div>
+      <div style="display:flex;flex:1;overflow:hidden;min-height:0;">
+        <div id="researchCyContainer" style="flex:1;min-height:400px;width:100%;position:relative;"></div>
+        <div id="researchDetail" style="width:240px;border-left:1px solid var(--border);padding:8px;overflow-y:auto;display:none;font-size:10px;"></div>
+      </div>
+      <div id="researchStats" style="font-size:9px;color:var(--text-muted);border-top:1px solid var(--border);">
+        <div class="research-info-grid">
+          <div class="research-info-row">
+            <span class="research-info-stat"><b>0</b> hypotheses</span>
+            <span class="research-info-stat"><b>0</b> observations</span>
+            <span class="research-info-stat"><b>0</b> evidence</span>
+            <span class="research-info-stat"><b>0</b> edges</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    </div>
 
   <!-- Pinned Metric Cards -->
   <div id="metricCards" class="metric-cards-container"></div>
@@ -601,6 +648,7 @@
 <script src="/static/js/panels.js"></script>
 <script src="/static/js/websocket.js"></script>
 <script src="/static/js/tour.js"></script>
+<script src="/static/js/research.js"></script>
 <script src="/static/js/init.js"></script>
 
 </body>

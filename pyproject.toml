@@ -34,7 +34,10 @@ manifolds = ["umap-learn>=0.5", "numpy>=1.24"]
 ai = ["httpx>=0.25"]
 notifications = ["slack_sdk>=3.0"]
 bench = ["matplotlib>=3.5", "pandas>=1.5"]
+research = ["torch>=2.0"]
 cifar = ["torchvision>=0.15"]
+vlm = ["open-clip-torch>=2.20"]
+detection = ["pycocotools>=2.0"]
 all = [
   "pyyaml>=6.0", "lightning>=2.0", "transformers>=4.30", "optuna>=3.0",
   "fastapi>=0.100", "uvicorn[standard]>=0.20", "websockets>=11.0",
@@ -43,12 +46,17 @@ all = [
   "slack_sdk>=3.0",
   "matplotlib>=3.5",
   "pandas>=1.5",
+  "open-clip-torch>=2.20",
 ]
 docs = [
   "mkdocs",
   "mkdocs-material",
   "mkdocstrings[python]",
   "mkdocs-awesome-pages-plugin",
+]
+e2e = [
+  "playwright>=1.40",
+  "pytest-playwright>=0.5",
 ]
 dev = [
   "pytest>=8.0",
@@ -75,6 +83,7 @@ hotcb = [
     "server/static/**/*",
     "server/guidelines/*.yaml",
     "server/ai_system_prompt.yaml",
+    "research/learner/pretrained/*.pt",
 ]
 
 [tool.coverage.run]

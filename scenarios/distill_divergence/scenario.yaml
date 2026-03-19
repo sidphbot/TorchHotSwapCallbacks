@@ -1,0 +1,6 @@
+name: distill_divergence
+pack: distillation_assist
+max_steps: 150
+framework: bare
+expected_rules:
+  - distillation_assist.temperature_guard

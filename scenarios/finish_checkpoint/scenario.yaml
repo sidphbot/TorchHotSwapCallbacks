@@ -1,0 +1,5 @@
+name: finish_checkpoint
+pack: finish_strong
+max_steps: 100
+expected_rules:
+  - finish_strong.best_checkpoint

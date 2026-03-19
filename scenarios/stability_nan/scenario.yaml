@@ -1,0 +1,5 @@
+name: stability_nan
+pack: stability_basics
+max_steps: 100
+expected_rules:
+  - stability_basics.nan_guard

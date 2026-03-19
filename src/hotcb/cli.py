@@ -216,6 +216,180 @@ def cmd_sugar_set(args: argparse.Namespace) -> None:
     print(f"queued {module} set_params for {args.id}")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Continuation tuning commands
+# ═══════════════════════════════════════════════════════════════════════
+
+def cmd_continue_baseline(args: argparse.Namespace) -> None:
+    """Train a baseline model with periodic checkpoints."""
+    import json as _json
+    task = args.task
+    out_dir = args.out
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Bootstrap JSONL files
+    for fname in ["hotcb.commands.jsonl", "hotcb.applied.jsonl", "hotcb.metrics.jsonl"]:
+        open(os.path.join(out_dir, fname), "w").close()
+    with open(os.path.join(out_dir, "hotcb.freeze.json"), "w") as f:
+        _json.dump({"mode": "off"}, f)
+    # No-recipe sentinel
+    open(os.path.join(out_dir, "hotcb.eval.no_recipe"), "w").close()
+
+    print(f"Training {task} baseline with checkpoints → {out_dir}")
+
+    if task == "mnist":
+        from hotcb.eval.tasks import mnist_training_with_checkpoints
+        default_steps = 1500
+        fn = mnist_training_with_checkpoints
+    elif task == "cifar10":
+        from hotcb.eval.tasks import cifar10_training_with_checkpoints
+        default_steps = 2000
+        fn = cifar10_training_with_checkpoints
+    elif task == "coco_mobilenet":
+        from hotcb.eval.tasks_coco import coco_mobilenet_training_with_checkpoints
+        default_steps = 5000
+        fn = coco_mobilenet_training_with_checkpoints
+    elif task == "imagenet_mobilenet":
+        from hotcb.eval.tasks_imagenet import imagenet_mobilenet_training_with_checkpoints
+        default_steps = 10000
+        fn = imagenet_mobilenet_training_with_checkpoints
+    elif task == "clip_coco":
+        from hotcb.eval.tasks_vlm import clip_coco_training_with_checkpoints
+        default_steps = 5000
+        fn = clip_coco_training_with_checkpoints
+    else:
+        raise SystemExit(f"Unknown task: {task}")
+
+    max_steps = args.steps or default_steps
+    fn(out_dir, max_steps=max_steps, checkpoint_interval=args.ckpt_interval)
+    print(f"Baseline complete. Checkpoints: {out_dir}/checkpoints/")
+
+
+def cmd_continue_run(args: argparse.Namespace) -> None:
+    """Run continuation tuning from a converged base run."""
+    from hotcb.routines.continuation import (
+        ContinuationConfig, ObjectiveSpec, GuardrailSpec, BudgetSpec,
+        ContinuationPlanner, ContinuationLauncher, ContinuationReport,
+        AnchorSelector, ResumeMode,
+    )
+    from hotcb.routines.continuation.planner import (
+        DEFAULT_RECIPES, AGGRESSIVE_RECIPES, COMBO_RECIPES,
+        MULTI_STAGE_RECIPES, ALL_RECIPES,
+    )
+
+    base_run_dir = args.run
+    output_dir = args.out or os.path.join(base_run_dir, "continuation")
+
+    # Read base metrics
+    best_path = os.path.join(base_run_dir, "best_metrics.json")
+    base_best = {}
+    if os.path.exists(best_path):
+        with open(best_path) as f:
+            base_best = json.load(f)
+
+    # Read final metrics from metrics JSONL
+    metrics_path = os.path.join(base_run_dir, "hotcb.metrics.jsonl")
+    base_final = {}
+    if os.path.exists(metrics_path):
+        with open(metrics_path) as f:
+            lines = f.readlines()
+        if lines:
+            for line in reversed(lines):
+                line = line.strip()
+                if line:
+                    try:
+                        rec = json.loads(line)
+                        base_final = rec.get("metrics", rec)
+                        break
+                    except json.JSONDecodeError:
+                        continue
+
+    # Select anchors
+    selector = AnchorSelector(base_run_dir)
+    anchors = selector.select_auto(
+        max_anchors=args.max_anchors,
+        primary_metric=args.metric,
+        mode=args.mode,
+    )
+
+    if not anchors:
+        raise SystemExit(f"No checkpoints found in {base_run_dir}/checkpoints/")
+
+    print(f"Found {len(anchors)} anchor(s):")
+    for a in anchors:
+        print(f"  {a.anchor_id}: step={a.step}, {a.reason.value}")
+
+    # Filter recipes if specified
+    recipe_groups = {
+        "default": DEFAULT_RECIPES,
+        "aggressive": AGGRESSIVE_RECIPES,
+        "combo": COMBO_RECIPES,
+        "multi_stage": MULTI_STAGE_RECIPES,
+        "all": ALL_RECIPES,
+    }
+
+    recipes = list(DEFAULT_RECIPES)
+    if args.recipes:
+        expanded = []
+        for name in args.recipes:
+            if name in recipe_groups:
+                expanded.extend(recipe_groups[name])
+            else:
+                match = [r for r in ALL_RECIPES if r.name == name]
+                expanded.extend(match)
+        if expanded:
+            recipes = expanded
+
+    resume_modes = [ResumeMode(m) for m in args.resume_modes]
+
+    config = ContinuationConfig(
+        base_run_dir=base_run_dir,
+        base_final_metrics=base_final,
+        base_best_metrics=base_best,
+        task=args.task,
+        objective=ObjectiveSpec(
+            primary_metric=args.metric,
+            mode=args.mode,
+        ),
+        guardrails=GuardrailSpec(),
+        budget=BudgetSpec(
+            max_anchors=args.max_anchors,
+            branches_per_anchor=args.branches_per_anchor,
+            max_extra_steps=args.extra_steps,
+        ),
+        anchors=anchors,
+        recipes=recipes,
+        resume_modes=resume_modes,
+        autopilot=args.autopilot,
+        policy_packs=args.packs or [],
+        output_dir=output_dir,
+    )
+
+    print(f"\nPlanning {config.total_branches} branches...")
+    planner = ContinuationPlanner(config)
+    branches = planner.plan()
+    print(f"Planned {len(branches)} branches")
+
+    print(f"\nRunning continuation routine...")
+    launcher = ContinuationLauncher(config, output_dir)
+    result = launcher.run_all(branches)
+
+    report = ContinuationReport(result)
+    print("\n" + report.full_report())
+    report_path = report.save(output_dir)
+    print(f"\nReport saved: {report_path}")
+
+
+def cmd_continue_report(args: argparse.Namespace) -> None:
+    """Show a previously generated continuation report."""
+    report_path = os.path.join(args.cont_dir, "continuation_report.txt")
+    if os.path.exists(report_path):
+        with open(report_path) as f:
+            print(f.read())
+    else:
+        print(f"No report found at {report_path}")
+
+
 def cmd_tune(args: argparse.Namespace) -> None:
     op = args.tune_command
     obj: Dict[str, Any] = {"module": "tune", "op": op}
@@ -374,8 +548,87 @@ def cmd_serve(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_scenario_list(args: argparse.Namespace) -> None:
+    """List available scenarios."""
+    from .scenarios import list_scenarios
+
+    scenarios = list_scenarios()
+    if not scenarios:
+        print("No scenarios found.")
+        return
+    print(f"{'Name':<30} {'Pack':<25} {'Steps':<8} {'Framework':<10} Description")
+    print("-" * 110)
+    for s in scenarios:
+        print(f"{s.name:<30} {s.pack:<25} {s.max_steps:<8} {s.framework:<10} {s.description[:40]}")
+
+
+def cmd_scenario_run(args: argparse.Namespace) -> None:
+    """Run one or more scenarios."""
+    from .scenarios import get, list_scenarios
+    from .scenarios.runner import ScenarioRunner, run_all
+
+    if args.all or args.pack:
+        results = run_all(
+            pack=args.pack,
+            step_delay=args.step_delay,
+            verbose=True,
+        )
+        passed = sum(1 for r in results if r.passed)
+        total = len(results)
+        print(f"\n{passed}/{total} scenarios passed")
+        if passed < total:
+            for r in results:
+                if not r.passed:
+                    print(f"  FAIL: {r.name} — missing rules: {r.missing_rules}")
+                    if r.error:
+                        print(f"        error: {r.error}")
+            raise SystemExit(1)
+        return
+
+    if args.name is None:
+        raise SystemExit("Provide a scenario name, --all, or --pack <name>")
+
+    config = get(args.name)
+    runner = ScenarioRunner(step_delay=args.step_delay, verbose=True)
+    result = runner.run(
+        config,
+        dashboard=args.dashboard,
+        host=args.host,
+        port=args.port,
+    )
+
+    status = "PASS" if result.passed else "FAIL"
+    print(f"\nScenario {result.name}: {status}")
+    print(f"  Rules fired: {result.rules_fired}")
+    if result.missing_rules:
+        print(f"  Missing rules: {result.missing_rules}")
+    if result.error:
+        print(f"  Error: {result.error}")
+    if not result.passed:
+        raise SystemExit(1)
+
+
 def cmd_demo(args: argparse.Namespace) -> None:
     """Launch a demo: synthetic training + live dashboard."""
+    # --scenario flag: delegate to scenario runner with dashboard
+    scenario_name = getattr(args, "scenario", None)
+    if scenario_name:
+        from .scenarios import get
+        from .scenarios.runner import ScenarioRunner
+
+        config = get(scenario_name)
+        runner = ScenarioRunner(step_delay=args.step_delay, verbose=True)
+        result = runner.run(
+            config,
+            dashboard=True,
+            host=args.host,
+            port=args.port,
+        )
+        status = "PASS" if result.passed else "FAIL"
+        print(f"\nScenario {result.name}: {status}")
+        print(f"  Rules fired: {result.rules_fired}")
+        return
+
     autopilot = getattr(args, "autopilot", "off")
     key_metric = getattr(args, "key_metric", None)
 
@@ -449,6 +702,528 @@ def cmd_launch(args: argparse.Namespace) -> None:
         serve=True,
         block=True,
     )
+
+
+def cmd_eval_list(args: argparse.Namespace) -> None:
+    """List available evaluation conditions."""
+    from .eval.conditions import ALL_CONDITIONS, ALL_WITH_SYNTHETIC, load_conditions_yaml
+    conditions = list(ALL_WITH_SYNTHETIC if getattr(args, 'include_synthetic', False) else ALL_CONDITIONS)
+    if getattr(args, 'conditions_file', None):
+        user = load_conditions_yaml(args.conditions_file)
+        conditions.extend(user)
+    print(f"{'Name':<40} {'Demo':<10} {'Autopilot':<8} {'NN':<4} Description")
+    print("-" * 120)
+    for c in conditions:
+        nn = "yes" if c.nn_mode else ""
+        print(f"{c.name:<40} {c.demo:<10} {c.autopilot:<8} {nn:<4} {c.description[:55]}")
+    print(f"\n{len(conditions)} conditions available")
+    if not getattr(args, 'include_synthetic', False):
+        print("  (use --include-synthetic to see golden/finetune/simple demo conditions)")
+
+
+def cmd_eval_run(args: argparse.Namespace) -> None:
+    """Run evaluation conditions with live dashboard.
+
+    Flow:
+    1. Pre-create all hypotheses as "proposed" in research graph
+    2. Start dashboard server immediately (background thread)
+    3. Run conditions one-by-one, updating graph live after each
+    4. Frontend auto-refreshes graph + auto-focuses latest completed run
+    """
+    import copy
+    import json as _json
+    import sys
+    import threading
+    import time
+
+    from .eval.conditions import ALL_CONDITIONS, ALL_WITH_SYNTHETIC, EvalCondition, load_conditions_yaml
+    from .eval.harness import EvalHarness
+    from .eval.report import EvalReport
+    from .research.engine import ResearchEngine
+
+    # Resolve output dir
+    output_dir = os.path.abspath(args.output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # NOTE: Do NOT create hotcb.metrics.jsonl in the parent output_dir.
+    # The dashboard's _resolve_active_run_dir() scans for subdirs with metrics.
+    # If the parent has metrics.jsonl, the tailer watches that (empty) file
+    # instead of the actual sub-run metrics — causing blank dashboard.
+
+    # Load user-defined conditions from YAML if provided
+    user_conditions: list = []
+    if getattr(args, 'conditions_file', None):
+        user_conditions = load_conditions_yaml(args.conditions_file)
+        w = sys.stderr.write
+        w(f"  Loaded {len(user_conditions)} custom condition(s) from {args.conditions_file}\n")
+
+    # Pool: include synthetic demos if --include-synthetic or --demo targets one
+    pool = ALL_WITH_SYNTHETIC if getattr(args, 'include_synthetic', False) else ALL_CONDITIONS
+    if args.demo in ("golden", "finetune", "simple"):
+        pool = ALL_WITH_SYNTHETIC
+    # Merge user conditions into pool
+    full_pool = list(pool) + user_conditions
+
+    # Select conditions
+    if args.conditions:
+        names = [n.strip() for n in args.conditions.split(",")]
+        conditions = []
+        for name in names:
+            found = [c for c in full_pool if c.name == name]
+            if not found:
+                print(f"Unknown condition: {name}")
+                print(f"Use 'hotcb eval list --include-synthetic' to see all conditions")
+                if user_conditions:
+                    print(f"Custom conditions: {', '.join(c.name for c in user_conditions)}")
+                raise SystemExit(1)
+            conditions.extend(found)
+    elif getattr(args, 'conditions_file', None) and not args.demo:
+        # If only --conditions-file given, run those conditions only
+        conditions = user_conditions
+    elif args.demo:
+        conditions = [c for c in full_pool if c.demo == args.demo]
+    else:
+        conditions = list(full_pool)
+
+    max_steps = args.max_steps
+    step_delay = args.step_delay
+
+    w = sys.stderr.write
+    w(f"\n  hotcb Evaluation Harness\n")
+    w(f"  Output: {output_dir}\n")
+    steps_str = str(max_steps) if max_steps else "task-default"
+    w(f"  Conditions: {len(conditions)} | Steps: {steps_str} | Delay: {step_delay}s\n")
+
+    # ── Phase 1: Pre-create all hypotheses as "proposed" ──
+    combined_engine = ResearchEngine(output_dir)
+    hyp_map = {}  # condition_name -> hyp node_id
+    for cond in conditions:
+        stream_id = f"eval_{cond.demo}"
+        try:
+            combined_engine.graph.create_stream(stream_id, f"Evaluation: {cond.demo}")
+        except Exception:
+            pass
+        hyp = combined_engine.hypothesize(
+            condition=cond.hypothesis_condition or cond.description,
+            intervention=cond.initial_overrides.get("opt", cond.initial_overrides.get("loss", {})),
+            expected_outcome=cond.hypothesis_expected or "see description",
+            stream_id=stream_id,
+        )
+        hyp_map[cond.name] = hyp.node_id
+    combined_engine.graph.save_snapshot()
+
+    # Write initial eval status
+    _write_eval_status(output_dir, conditions, completed=[], running=None, done=False)
+
+    # ── Phase 2: Start dashboard immediately ──
+    host = args.host
+    port = args.port
+    no_serve = getattr(args, 'no_serve', False)
+    server_thread = None
+
+    if not no_serve:
+        # Pre-create first condition's run dir so the server can resolve it
+        first_run_dir = os.path.join(output_dir, conditions[0].name)
+        os.makedirs(first_run_dir, exist_ok=True)
+        for fname in ["hotcb.metrics.jsonl", "hotcb.commands.jsonl", "hotcb.applied.jsonl"]:
+            p = os.path.join(first_run_dir, fname)
+            if not os.path.exists(p):
+                open(p, "w").close()
+        with open(os.path.join(first_run_dir, "hotcb.freeze.json"), "w") as f:
+            _json.dump({"mode": "off"}, f)
+
+        w(f"  Dashboard: http://localhost:{port}  (Research tab shows {len(conditions)} untested hypotheses)\n\n")
+        server_thread = threading.Thread(
+            target=_eval_serve, args=(output_dir, host, port), daemon=True,
+        )
+        server_thread.start()
+        time.sleep(0.5)  # let server bind
+    else:
+        w(f"\n")
+
+    # ── Phase 3: Run conditions one-by-one, update graph live ──
+    harness = EvalHarness(output_dir=output_dir)
+    t0 = time.monotonic()
+    completed_names = []
+
+    for i, cond in enumerate(conditions, 1):
+        c = copy.deepcopy(cond)
+        c.step_delay = step_delay
+        if max_steps is not None:
+            c.max_steps = max_steps
+
+        # Transition hypothesis to "testing"
+        hyp_id = hyp_map.get(c.name)
+        if hyp_id:
+            combined_engine.graph.transition_hypothesis(hyp_id, "testing")
+            combined_engine.graph.save_snapshot()
+
+        # Update eval status: this condition is now running
+        _write_eval_status(output_dir, conditions, completed_names, running=c.name, done=False)
+
+        w(f"  [{i}/{len(conditions)}] {c.name}...")
+        try:
+            result = harness.run(c)
+            loss = result.final_metrics.get("train_loss", "?")
+            acts = len(result.autopilot_actions)
+            w(f" loss={loss} actions={acts}\n")
+            _write_run_meta(result.run_dir, c)
+
+            # Add evidence to research graph
+            if hyp_id:
+                _add_eval_evidence(combined_engine, hyp_id, result, c)
+                combined_engine.graph.save_snapshot()
+
+            completed_names.append(c.name)
+        except Exception as e:
+            w(f" FAILED: {e}\n")
+            # Mark hypothesis as inconclusive on failure
+            if hyp_id:
+                combined_engine.graph.transition_hypothesis(hyp_id, "inconclusive")
+                combined_engine.graph.save_snapshot()
+            completed_names.append(c.name)
+
+        # Update eval status: this condition is done, focus it
+        _write_eval_status(output_dir, conditions, completed_names, running=None,
+                           done=(i == len(conditions)), focus_run=c.name)
+
+    elapsed = time.monotonic() - t0
+    w(f"\n  Done in {elapsed:.1f}s\n\n")
+
+    # Save eval results JSON
+    harness.save_results()
+
+    # Print report
+    report = EvalReport(harness.results)
+    print(report.full_report())
+
+    print(f"\nResults saved to: {output_dir}")
+
+    if server_thread:
+        print(f"  Dashboard running at http://localhost:{port}")
+        print(f"  Press Ctrl+C to stop.\n")
+        try:
+            server_thread.join()
+        except KeyboardInterrupt:
+            w("\n  Shutting down.\n")
+    else:
+        print(f"\nTo view in dashboard:")
+        print(f"  hotcb eval serve --output-dir {output_dir}")
+
+
+def cmd_eval_report(args: argparse.Namespace) -> None:
+    """Print report from saved eval results."""
+    import json as _json
+    from .eval.harness import EvalResult
+    from .eval.report import EvalReport
+
+    results_path = os.path.join(args.output_dir, "eval_results.json")
+    if not os.path.exists(results_path):
+        print(f"No eval results at {results_path}")
+        print("Run 'hotcb eval run' first.")
+        raise SystemExit(1)
+
+    with open(results_path) as f:
+        data = _json.load(f)
+
+    # Reconstruct EvalResult objects (without full metric history)
+    results = []
+    for d in data:
+        results.append(EvalResult(
+            condition_name=d["condition_name"],
+            demo=d["demo"],
+            description=d["description"],
+            final_metrics=d.get("final_metrics", {}),
+            metric_history=[],
+            applied=d.get("applied", []),
+            autopilot_actions=d.get("autopilot_actions", []),
+            total_steps=d.get("total_steps", 0),
+            intervention_count=d.get("intervention_count", 0),
+            elapsed_seconds=d.get("elapsed_seconds", 0),
+            run_dir=d.get("run_dir", ""),
+            seed=d.get("seed"),
+            research_stats=d.get("research_stats", {}),
+        ))
+
+    report = EvalReport(results)
+    print(report.full_report())
+
+
+def cmd_eval_serve(args: argparse.Namespace) -> None:
+    """Serve dashboard for eval results."""
+    output_dir = os.path.abspath(args.output_dir)
+    if not os.path.exists(output_dir):
+        print(f"Output dir not found: {output_dir}")
+        raise SystemExit(1)
+    _eval_serve(output_dir, args.host, args.port)
+
+
+def _eval_serve(output_dir: str, host: str, port: int) -> None:
+    """Launch dashboard server on eval output dir."""
+    from .server.app import run_server
+    run_server(run_dir=output_dir, host=host, port=port, poll_interval=1.0)
+
+
+def _write_eval_status(output_dir, conditions, completed, running=None, done=False, focus_run=None):
+    """Write eval progress file — polled by frontend for live updates."""
+    import json as _json
+    status = {
+        "total": len(conditions),
+        "completed": len(completed),
+        "completed_names": list(completed),
+        "running": running,
+        "done": done,
+        "focus_run": focus_run,
+        "conditions": [c.name for c in conditions],
+    }
+    path = os.path.join(output_dir, "hotcb.eval.status.json")
+    with open(path, "w") as f:
+        _json.dump(status, f)
+
+
+def _add_eval_evidence(engine, hyp_id, result, cond):
+    """Add evidence from a completed eval result to the research graph."""
+    final_loss = result.final_metrics.get("train_loss", 999)
+    val_loss = result.final_metrics.get("val_loss", 999)
+    val_acc = result.final_metrics.get("val_accuracy", 0)
+    # Determine outcome
+    if cond.demo in ("mnist", "cifar10"):
+        outcome = "improved" if val_acc > 0.5 else ("neutral" if val_acc > 0.2 else "degraded")
+    else:
+        outcome = "improved" if val_loss < 2.0 else "degraded"
+    engine.graph.add_evidence(
+        hypothesis_id=hyp_id,
+        outcome=outcome,
+        delta={
+            "train_loss": final_loss,
+            "val_loss": val_loss,
+            "val_accuracy": val_acc,
+            "interventions": result.intervention_count,
+            "autopilot_actions": len(result.autopilot_actions),
+        },
+        context={
+            "condition": cond.name,
+            "steps": result.total_steps,
+            "autopilot": cond.autopilot,
+            "nn_mode": cond.nn_mode,
+        },
+        source="eval_harness",
+    )
+    # Conclude hypothesis based on outcome
+    if outcome == "improved":
+        engine.graph.transition_hypothesis(hyp_id, "confirmed")
+    elif outcome == "degraded":
+        engine.graph.transition_hypothesis(hyp_id, "refuted")
+    else:
+        engine.graph.transition_hypothesis(hyp_id, "inconclusive")
+
+
+def _write_run_meta(run_dir: str, cond) -> None:
+    """Write hotcb.run.json so comparison view shows condition name."""
+    import json as _json
+    meta = {
+        "config_name": cond.name,
+        "config_id": cond.name,
+        "demo": cond.demo,
+        "description": cond.description,
+        "autopilot": cond.autopilot,
+        "nn_mode": cond.nn_mode,
+    }
+    with open(os.path.join(run_dir, "hotcb.run.json"), "w") as f:
+        _json.dump(meta, f, indent=2)
+
+
+def cmd_research_stream_list(args: argparse.Namespace) -> None:
+    from .research.graph import ResearchGraph
+    g = ResearchGraph(args.dir)
+    if not g.load_snapshot():
+        g.replay_events()
+    streams = g.list_streams()
+    if not streams:
+        print("No research streams.")
+        return
+    print(f"{'ID':<14} {'Name':<30} {'Status':<12} Hyps  Obs")
+    print("-" * 80)
+    for s in streams:
+        print(f"{s.stream_id:<14} {s.name:<30} {s.status:<12} {len(s.hypothesis_ids):<5} {len(s.observation_ids)}")
+
+
+def cmd_research_stream_new(args: argparse.Namespace) -> None:
+    from .research.engine import ResearchEngine
+    engine = ResearchEngine(args.dir)
+    s = engine.graph.create_stream(args.name, args.description or "")
+    engine.graph.save_snapshot()
+    print(f"Created stream {s.stream_id}: {s.name}")
+
+
+def cmd_research_stream_conclude(args: argparse.Namespace) -> None:
+    from .research.engine import ResearchEngine
+    engine = ResearchEngine(args.dir)
+    ok = engine.graph.conclude_stream(args.stream_id, args.conclusion)
+    if ok:
+        engine.graph.save_snapshot()
+        print(f"Concluded stream {args.stream_id}")
+    else:
+        print(f"Failed to conclude stream {args.stream_id}")
+        raise SystemExit(1)
+
+
+def cmd_research_observe(args: argparse.Namespace) -> None:
+    from .research.engine import ResearchEngine
+    engine = ResearchEngine(args.dir)
+    tags = [t.strip() for t in args.tags.split(",")] if args.tags else []
+    node = engine.observe(
+        text=args.text, step=args.step,
+        tags=tags, stream_id=args.stream or None,
+    )
+    engine.graph.save_snapshot()
+    print(f"Observation {node.node_id}: {node.text[:60]}")
+
+
+def cmd_research_hyp_add(args: argparse.Namespace) -> None:
+    from .research.engine import ResearchEngine
+    engine = ResearchEngine(args.dir)
+    intervention = json.loads(args.intervention) if args.intervention else {}
+    node = engine.hypothesize(
+        condition=args.condition,
+        intervention=intervention,
+        expected_outcome=args.expected,
+        stream_id=args.stream or None,
+    )
+    engine.graph.save_snapshot()
+    print(f"Hypothesis {node.node_id}: {node.condition}")
+
+
+def cmd_research_hyp_list(args: argparse.Namespace) -> None:
+    from .research.graph import ResearchGraph
+    g = ResearchGraph(args.dir)
+    if not g.load_snapshot():
+        g.replay_events()
+    status = getattr(args, "status", None)
+    hyps = g.hypotheses_by_status(status) if status else g.all_hypotheses()
+    if not hyps:
+        print("No hypotheses.")
+        return
+    print(f"{'ID':<14} {'Status':<14} {'Conf':<6} {'Ev':<4} Condition")
+    print("-" * 80)
+    for h in hyps:
+        print(f"{h.node_id:<14} {h.status:<14} {h.confidence:.2f}  {h.evidence_count:<4} {h.condition[:40]}")
+
+
+def cmd_research_hyp_show(args: argparse.Namespace) -> None:
+    from .research.graph import ResearchGraph
+    from .research.types import HypothesisNode
+    g = ResearchGraph(args.dir)
+    if not g.load_snapshot():
+        g.replay_events()
+    node = g.get_node(args.hyp_id)
+    if not isinstance(node, HypothesisNode):
+        print(f"Hypothesis not found: {args.hyp_id}")
+        raise SystemExit(1)
+    print(f"ID:        {node.node_id}")
+    print(f"Status:    {node.status}")
+    print(f"Condition: {node.condition}")
+    print(f"Expected:  {node.expected_outcome}")
+    print(f"Confidence: {node.confidence:.2%}")
+    print(f"NN Conf:   {node.nn_confidence:.2%}")
+    print(f"Evidence:  {node.evidence_count}")
+    print(f"Tests:     {node.test_count}")
+    print(f"Source:    {node.source}")
+    print(f"Intervention: {json.dumps(node.intervention, indent=2)}")
+
+
+def cmd_research_hyp_test(args: argparse.Namespace) -> None:
+    from .research.engine import ResearchEngine
+    engine = ResearchEngine(args.dir)
+    try:
+        result = engine.test_hypothesis(args.hyp_id)
+        engine.graph.save_snapshot()
+        print(f"Testing hypothesis {args.hyp_id}")
+        print(f"Command written: {json.dumps(result['command'])}")
+    except ValueError as e:
+        print(f"Error: {e}")
+        raise SystemExit(1)
+
+
+def cmd_research_hyp_conclude(args: argparse.Namespace) -> None:
+    from .research.engine import ResearchEngine
+    engine = ResearchEngine(args.dir)
+    ok = engine.conclude_hypothesis(args.hyp_id, args.status)
+    if ok:
+        engine.graph.save_snapshot()
+        print(f"Hypothesis {args.hyp_id} → {args.status}")
+    else:
+        print(f"Invalid transition for {args.hyp_id}")
+        raise SystemExit(1)
+
+
+def cmd_research_model_status(args: argparse.Namespace) -> None:
+    from .research.engine import ResearchEngine
+    engine = ResearchEngine(args.dir, nn_mode=True)
+    learner = engine._get_learner()
+    if learner is None:
+        print("NN model not available (torch not installed or no pretrained weights)")
+        return
+    status = learner.status
+    for k, v in status.items():
+        print(f"  {k}: {v}")
+
+
+def cmd_research_export(args: argparse.Namespace) -> None:
+    from .research.engine import ResearchEngine
+    from .research.export import export_graph
+    engine = ResearchEngine(args.dir)
+    path = export_graph(engine.graph, args.out, stream_id=args.stream or None)
+    print(f"Exported to {path}")
+
+
+def cmd_research_import(args: argparse.Namespace) -> None:
+    from .research.engine import ResearchEngine
+    from .research.export import import_graph
+    engine = ResearchEngine(args.dir)
+    count = import_graph(engine.graph, args.path)
+    engine.graph.save_snapshot()
+    print(f"Imported {count} items")
+
+
+def cmd_research_merge(args: argparse.Namespace) -> None:
+    from .research.engine import ResearchEngine
+    from .research.export import merge_from_run
+    engine = ResearchEngine(args.dir)
+    count = merge_from_run(engine.graph, args.run_dir)
+    engine.graph.save_snapshot()
+    print(f"Merged {count} new items")
+
+
+def cmd_research_export_recipe(args: argparse.Namespace) -> None:
+    from .research.engine import ResearchEngine
+    engine = ResearchEngine(args.dir)
+    path = engine.export_confirmed_recipe(out_path=args.out or None)
+    print(f"Recipe exported to {path}")
+
+
+def cmd_research_load_conditions(args: argparse.Namespace) -> None:
+    """Load continuation conditions as research hypotheses."""
+    run_dir = args.dir
+    from hotcb.research.engine import ResearchEngine
+    engine = ResearchEngine(run_dir)
+    hyps = engine.load_continuation_conditions(args.task, args.base_run)
+    print(f"Loaded {len(hyps)} continuation conditions as hypotheses")
+    for h in hyps:
+        print(f"  {h.node_id}: {h.condition[:60]}")
+
+
+def cmd_research_launch_tests(args: argparse.Namespace) -> None:
+    """Launch continuation tests for selected hypotheses."""
+    run_dir = args.dir
+    from hotcb.research.engine import ResearchEngine
+    engine = ResearchEngine(run_dir)
+    hyp_ids = [h.strip() for h in args.hyps.split(",")]
+    results = engine.launch_condition_tests(hyp_ids, args.base_run)
+    for r in results:
+        status = r.get("outcome", r.get("error", "unknown"))
+        delta = r.get("primary_delta_pct", "")
+        print(f"  {r['hypothesis_id']}: {status}" + (f" ({delta:+.2f}%)" if isinstance(delta, (int, float)) else ""))
 
 
 def cmd_tune_export_recipe(args: argparse.Namespace) -> None:
@@ -711,6 +1486,61 @@ def build_parser() -> argparse.ArgumentParser:
     pbench.add_argument("--max-steps", type=int, default=None, help="Override max steps")
     pbench.set_defaults(func=cmd_bench)
 
+    # --- Scenario subcommand ---
+    pscenario = sub.add_parser("scenario", help="Run policy pack scenario tests")
+    scenario_sub = pscenario.add_subparsers(dest="scenario_cmd", required=True)
+
+    psc_list = scenario_sub.add_parser("list", help="List available scenarios")
+    psc_list.set_defaults(func=cmd_scenario_list)
+
+    psc_run = scenario_sub.add_parser("run", help="Run a scenario (or all)")
+    psc_run.add_argument("name", nargs="?", default=None, help="Scenario name (omit for --all)")
+    psc_run.add_argument("--all", action="store_true", help="Run all scenarios")
+    psc_run.add_argument("--pack", default=None, help="Run all scenarios for a given pack")
+    psc_run.add_argument("--dashboard", action="store_true", help="Run with live dashboard")
+    psc_run.add_argument("--host", default="0.0.0.0", help="Dashboard bind host")
+    psc_run.add_argument("--port", type=int, default=8421, help="Dashboard bind port")
+    psc_run.add_argument("--step-delay", type=float, default=0.0, help="Seconds between steps (0 for headless)")
+    psc_run.set_defaults(func=cmd_scenario_run)
+
+    # --- Eval subcommand ---
+    peval = sub.add_parser("eval", help="Run evaluation harness (controlled experiments)")
+    eval_sub = peval.add_subparsers(dest="eval_cmd", required=True)
+
+    peval_list = eval_sub.add_parser("list", help="List available conditions")
+    peval_list.add_argument("--include-synthetic", action="store_true",
+                            help="Also list golden/finetune/simple synthetic demo conditions")
+    peval_list.add_argument("--conditions-file", default=None,
+                            help="YAML file with custom conditions to include in listing")
+    peval_list.set_defaults(func=cmd_eval_list)
+
+    peval_run = eval_sub.add_parser("run", help="Run evaluation conditions")
+    peval_run.add_argument("--output-dir", default="./eval_output", help="Output directory for results")
+    peval_run.add_argument("--conditions", default=None,
+                           help="Comma-separated condition names (default: all real)")
+    peval_run.add_argument("--demo", default=None, choices=["golden", "finetune", "simple", "mnist", "cifar10"],
+                           help="Run all conditions for a specific demo")
+    peval_run.add_argument("--conditions-file", default=None,
+                           help="YAML file with custom conditions (see docs/eval.md)")
+    peval_run.add_argument("--include-synthetic", action="store_true",
+                           help="Include golden/finetune/simple synthetic demo conditions")
+    peval_run.add_argument("--max-steps", type=int, default=None, help="Steps per condition (default: task-specific)")
+    peval_run.add_argument("--step-delay", type=float, default=0.0, help="Delay between steps (0 for headless)")
+    peval_run.add_argument("--no-serve", action="store_true", help="Skip live dashboard (headless mode)")
+    peval_run.add_argument("--host", default="0.0.0.0", help="Dashboard bind host")
+    peval_run.add_argument("--port", type=int, default=8421, help="Dashboard bind port")
+    peval_run.set_defaults(func=cmd_eval_run)
+
+    peval_report = eval_sub.add_parser("report", help="Print report from saved results")
+    peval_report.add_argument("--output-dir", default="./eval_output", help="Output directory with results")
+    peval_report.set_defaults(func=cmd_eval_report)
+
+    peval_serve = eval_sub.add_parser("serve", help="Serve dashboard for eval results")
+    peval_serve.add_argument("--output-dir", default="./eval_output", help="Output directory with results")
+    peval_serve.add_argument("--host", default="0.0.0.0", help="Bind host")
+    peval_serve.add_argument("--port", type=int, default=8421, help="Bind port")
+    peval_serve.set_defaults(func=cmd_eval_serve)
+
     pdemo = sub.add_parser("demo", help="Launch synthetic training with live dashboard")
     pdemo.add_argument("--golden", action="store_true",
                        help="Run the golden demo (multi-task with recipe-driven loss shifts and feature capture)")
@@ -723,6 +1553,7 @@ def build_parser() -> argparse.ArgumentParser:
     pdemo.add_argument("--autopilot", choices=["off", "suggest", "auto", "ai_suggest", "ai_auto"],
                         default="off", help="Start with autopilot mode enabled")
     pdemo.add_argument("--key-metric", default=None, help="Primary optimization metric for AI autopilot")
+    pdemo.add_argument("--scenario", default=None, help="Run a named scenario with dashboard (alias for scenario run --dashboard)")
     pdemo.set_defaults(func=cmd_demo)
 
     pserve = sub.add_parser("serve", help="Start the live dashboard server")
@@ -752,6 +1583,132 @@ def build_parser() -> argparse.ArgumentParser:
     plaunch.add_argument("--ai-cadence", type=int, default=50, help="Steps between AI check-ins")
     plaunch.add_argument("--seed", type=int, default=None, help="Random seed")
     plaunch.set_defaults(func=cmd_launch)
+
+    # --- Research subcommand ---
+    presearch = sub.add_parser("research", help="Research & learning module")
+    research_sub = presearch.add_subparsers(dest="research_cmd", required=True)
+
+    # research stream
+    prs = research_sub.add_parser("stream", help="Manage research streams")
+    rs_sub = prs.add_subparsers(dest="stream_cmd", required=True)
+
+    prs_list = rs_sub.add_parser("list", help="List streams")
+    prs_list.set_defaults(func=cmd_research_stream_list)
+
+    prs_new = rs_sub.add_parser("new", help="Create a stream")
+    prs_new.add_argument("name", help="Stream name")
+    prs_new.add_argument("--description", default="", help="Stream description")
+    prs_new.set_defaults(func=cmd_research_stream_new)
+
+    prs_conclude = rs_sub.add_parser("conclude", help="Conclude a stream")
+    prs_conclude.add_argument("stream_id", help="Stream ID")
+    prs_conclude.add_argument("--conclusion", required=True, help="Conclusion text")
+    prs_conclude.set_defaults(func=cmd_research_stream_conclude)
+
+    # research observe
+    pobs = research_sub.add_parser("observe", help="Record an observation")
+    pobs.add_argument("text", help="Observation text")
+    pobs.add_argument("--stream", default=None, help="Stream ID")
+    pobs.add_argument("--tags", default="", help="Comma-separated tags")
+    pobs.add_argument("--step", type=int, default=0, help="Training step")
+    pobs.set_defaults(func=cmd_research_observe)
+
+    # research hyp
+    phyp = research_sub.add_parser("hyp", help="Hypothesis operations")
+    hyp_sub = phyp.add_subparsers(dest="hyp_cmd", required=True)
+
+    phyp_add = hyp_sub.add_parser("add", help="Add a hypothesis")
+    phyp_add.add_argument("--condition", required=True, help="Condition expression")
+    phyp_add.add_argument("--intervention", required=True, help="Intervention JSON")
+    phyp_add.add_argument("--expected", required=True, help="Expected outcome")
+    phyp_add.add_argument("--stream", default=None, help="Stream ID")
+    phyp_add.set_defaults(func=cmd_research_hyp_add)
+
+    phyp_list = hyp_sub.add_parser("list", help="List hypotheses")
+    phyp_list.add_argument("--status", default=None, help="Filter by status")
+    phyp_list.set_defaults(func=cmd_research_hyp_list)
+
+    phyp_show = hyp_sub.add_parser("show", help="Show hypothesis details")
+    phyp_show.add_argument("hyp_id", help="Hypothesis ID")
+    phyp_show.set_defaults(func=cmd_research_hyp_show)
+
+    phyp_test = hyp_sub.add_parser("test", help="Test a hypothesis")
+    phyp_test.add_argument("hyp_id", help="Hypothesis ID")
+    phyp_test.set_defaults(func=cmd_research_hyp_test)
+
+    phyp_conclude = hyp_sub.add_parser("conclude", help="Conclude a hypothesis")
+    phyp_conclude.add_argument("hyp_id", help="Hypothesis ID")
+    phyp_conclude.add_argument("--status", required=True,
+                               choices=["confirmed", "refuted", "inconclusive", "archived"])
+    phyp_conclude.set_defaults(func=cmd_research_hyp_conclude)
+
+    # research model
+    pmodel = research_sub.add_parser("model", help="NN model operations")
+    model_sub = pmodel.add_subparsers(dest="model_cmd", required=True)
+
+    pmodel_status = model_sub.add_parser("status", help="Show model status")
+    pmodel_status.set_defaults(func=cmd_research_model_status)
+
+    # research export/import/merge
+    prexp = research_sub.add_parser("export", help="Export research graph")
+    prexp.add_argument("--out", required=True, help="Output JSON path")
+    prexp.add_argument("--stream", default=None, help="Export single stream")
+    prexp.set_defaults(func=cmd_research_export)
+
+    primp = research_sub.add_parser("import", help="Import research graph")
+    primp.add_argument("path", help="Import JSON path")
+    primp.set_defaults(func=cmd_research_import)
+
+    prmerge = research_sub.add_parser("merge", help="Merge from another run")
+    prmerge.add_argument("run_dir", help="Source run directory")
+    prmerge.set_defaults(func=cmd_research_merge)
+
+    prrecipe = research_sub.add_parser("export-recipe", help="Export confirmed hypotheses as recipe")
+    prrecipe.add_argument("--out", default=None, help="Output JSONL path")
+    prrecipe.set_defaults(func=cmd_research_export_recipe)
+
+    # research load-conditions
+    prlc = research_sub.add_parser("load-conditions", help="Load continuation conditions as hypotheses")
+    prlc.add_argument("--task", required=True, choices=["mnist", "cifar10"], help="Task name")
+    prlc.add_argument("--base-run", default="", help="Base run directory")
+    prlc.set_defaults(func=cmd_research_load_conditions)
+
+    # research launch-tests
+    prlt = research_sub.add_parser("launch-tests", help="Launch continuation tests for hypotheses")
+    prlt.add_argument("--hyps", required=True, help="Comma-separated hypothesis IDs")
+    prlt.add_argument("--base-run", required=True, help="Base run directory with checkpoints")
+    prlt.set_defaults(func=cmd_research_launch_tests)
+
+    # ── continue (continuation tuning) ──
+    pcont = sub.add_parser("continue", help="Continuation tuning from converged checkpoints")
+    cont_sub = pcont.add_subparsers(dest="continue_command", required=True)
+
+    pcont_run = cont_sub.add_parser("run", help="Run continuation routine")
+    pcont_run.add_argument("--run", required=True, help="Base run directory with checkpoints/")
+    pcont_run.add_argument("--task", default="mnist", choices=["mnist", "cifar10", "coco_mobilenet", "imagenet_mobilenet", "imagenet_mobilenetv2_paper", "coco_detection", "clip_coco"])
+    pcont_run.add_argument("--metric", default="val_accuracy", help="Primary metric")
+    pcont_run.add_argument("--mode", default="max", choices=["min", "max"])
+    pcont_run.add_argument("--recipes", nargs="*", help="Recipe names or groups: default, aggressive, combo, multi_stage, all")
+    pcont_run.add_argument("--resume-modes", nargs="*", default=["full_resume"],
+                           choices=["full_resume", "reset_scheduler", "weights_only"])
+    pcont_run.add_argument("--max-anchors", type=int, default=2)
+    pcont_run.add_argument("--branches-per-anchor", type=int, default=6)
+    pcont_run.add_argument("--extra-steps", type=int, default=500)
+    pcont_run.add_argument("--autopilot", default="off", choices=["off", "auto", "suggest"])
+    pcont_run.add_argument("--packs", nargs="*", default=[])
+    pcont_run.add_argument("--out", default=None, help="Output directory")
+    pcont_run.set_defaults(func=cmd_continue_run)
+
+    pcont_report = cont_sub.add_parser("report", help="Show continuation report")
+    pcont_report.add_argument("--dir", dest="cont_dir", required=True, help="Continuation output dir")
+    pcont_report.set_defaults(func=cmd_continue_report)
+
+    pcont_baseline = cont_sub.add_parser("baseline", help="Train a baseline with checkpoints")
+    pcont_baseline.add_argument("--task", default="mnist", choices=["mnist", "cifar10", "coco_mobilenet", "imagenet_mobilenet", "imagenet_mobilenetv2_paper", "coco_detection", "clip_coco"])
+    pcont_baseline.add_argument("--steps", type=int, default=None, help="Max steps (default: task default)")
+    pcont_baseline.add_argument("--out", required=True, help="Output run directory")
+    pcont_baseline.add_argument("--ckpt-interval", type=int, default=250, help="Checkpoint save interval")
+    pcont_baseline.set_defaults(func=cmd_continue_baseline)
 
     ptune = sub.add_parser("tune", help="Tune module control")
     tune_sub = ptune.add_subparsers(dest="tune_command", required=True)

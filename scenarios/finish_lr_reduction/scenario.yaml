@@ -1,0 +1,5 @@
+name: finish_lr_reduction
+pack: finish_strong
+max_steps: 150
+expected_rules:
+  - finish_strong.mutation_lockdown

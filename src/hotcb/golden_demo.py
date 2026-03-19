@@ -76,7 +76,9 @@ def _golden_training(
             f.write(json.dumps(entry) + "\n")
 
     # --- Scheduled recipe commands (written to commands.jsonl at the right step) ---
-    recipe_schedule = {
+    # If hotcb.eval.no_recipe sentinel exists, skip recipe injection (for eval baselines)
+    _skip_recipe = os.path.exists(os.path.join(run_dir, "hotcb.eval.no_recipe"))
+    recipe_schedule = {} if _skip_recipe else {
         200: {"module": "loss", "op": "set_params",
               "params": {"weight_a": 0.3, "weight_b": 0.7}, "source": "recipe"},
         400: {"module": "opt", "op": "set_params",
@@ -91,9 +93,17 @@ def _golden_training(
     # --- Mutable state for multi-task loss weights ---
     loss_weights = {"weight_a": 0.7, "weight_b": 0.3}
 
+    # --- SWA state container (toggled via swa_actuator) ---
+    model_container = {"swa_enabled": False}
+    swa_history_a: list = []  # loss_a snapshots for averaging
+    swa_history_b: list = []  # loss_b snapshots for averaging
+    swa_start_step = 0
+
     # --- Wire HotKernel + MetricsCollector + actuators ---
+    from hotcb.actuators import swa_actuator as _swa_act
     mc = MetricsCollector(os.path.join(run_dir, "hotcb.metrics.jsonl"))
-    ms = mutable_state(optimizer_actuators(opt) + loss_actuators(loss_weights))
+    all_actuators = optimizer_actuators(opt) + loss_actuators(loss_weights) + [_swa_act(model_container)]
+    ms = mutable_state(all_actuators)
     kernel = HotKernel(run_dir=run_dir, debounce_steps=1, metrics_collector=mc, mutable_state=ms)
 
     # --- Training state ---
@@ -128,31 +138,83 @@ def _golden_training(
         warmup_factor = min(1.0, step / 50.0)
         effective_lr = lr * warmup_factor
 
-        # Learning rate factor -- higher LR = faster convergence to a point
-        lr_factor = min(effective_lr * 500, 1.0)
+        # Learning rate factor — optimal zone is lr ≈ 1e-3.
+        # Too high: instability (oscillations, loss spikes)
+        # Too low: barely learns
+        lr_ratio = effective_lr / 1e-3  # ratio vs optimal
+        if lr_ratio > 5.0:
+            # Instability zone: convergence slows, noise increases, occasional spikes
+            lr_factor = min(1.0, 5.0 / lr_ratio)  # diminishing returns
+            instability = (lr_ratio - 5.0) * 0.02  # extra noise
+            spike_prob = min(0.15, (lr_ratio - 5.0) * 0.01)
+        elif lr_ratio < 0.1:
+            # Too-slow zone: barely learns
+            lr_factor = lr_ratio * 2.0  # heavily penalized
+            instability = 0.0
+            spike_prob = 0.0
+        else:
+            # Sweet spot
+            lr_factor = min(lr_ratio, 1.0)
+            instability = 0.0
+            spike_prob = 0.0
 
         # Task A: Classification (exponential decay toward target)
-        noise_a = random.gauss(0, 0.015 * max(loss_a, 0.05))
+        noise_a = random.gauss(0, (0.015 + instability) * max(loss_a, 0.05))
+        # Spike check: high LR can cause sudden loss increases
+        if spike_prob > 0 and random.random() < spike_prob:
+            noise_a += loss_a * random.uniform(0.1, 0.4)
         loss_a = max(target_loss_a * 0.9,
                      loss_a * (1 - 0.008 * lr_factor * weight_a) + noise_a)
 
         # Task B: Reconstruction (slower convergence, responds to weight)
-        noise_b = random.gauss(0, 0.01 * max(loss_b, 0.03))
+        noise_b = random.gauss(0, (0.01 + instability * 0.7) * max(loss_b, 0.03))
+        if spike_prob > 0 and random.random() < spike_prob:
+            noise_b += loss_b * random.uniform(0.05, 0.3)
         loss_b = max(target_loss_b * 0.9,
                      loss_b * (1 - 0.006 * lr_factor * weight_b) + noise_b)
+
+        # SWA: checkpoint averaging smooths loss oscillations
+        if model_container["swa_enabled"]:
+            if swa_start_step == 0:
+                swa_start_step = step
+            swa_history_a.append(loss_a)
+            swa_history_b.append(loss_b)
+            # Keep last 20 checkpoints for averaging
+            if len(swa_history_a) > 20:
+                swa_history_a.pop(0)
+                swa_history_b.pop(0)
+            # SWA effect: use averaged loss (smoother, often lower)
+            if len(swa_history_a) >= 3:
+                swa_loss_a = sum(swa_history_a) / len(swa_history_a)
+                swa_loss_b = sum(swa_history_b) / len(swa_history_b)
+                # Blend: SWA pulls toward the averaged (smoother) trajectory
+                loss_a = 0.7 * swa_loss_a + 0.3 * loss_a
+                loss_b = 0.7 * swa_loss_b + 0.3 * loss_b
+        else:
+            swa_history_a.clear()
+            swa_history_b.clear()
+            swa_start_step = 0
 
         # Combined loss
         total_loss = weight_a * loss_a + weight_b * loss_b
 
         # Grad norm (decreases over training, spikes on weight changes)
         grad_decay = 0.995 if step > 50 else 0.99
-        grad_norm = max(0.1, grad_norm * grad_decay + random.gauss(0, 0.03))
+        grad_noise = 0.03 + instability * 0.5
+        grad_norm = max(0.1, grad_norm * grad_decay + random.gauss(0, grad_noise))
+        # High LR causes grad spikes
+        if spike_prob > 0 and random.random() < spike_prob * 0.5:
+            grad_norm *= random.uniform(1.5, 3.0)
 
         # Validation losses (slightly worse, with overfitting tendency)
         overfit_a = 0.05 + step * 0.00015 * (1 - wd * 300)
         overfit_b = 0.03 + step * 0.0001 * (1 - wd * 300)
         val_loss_a = max(target_loss_a, loss_a + overfit_a + random.gauss(0, 0.02))
         val_loss_b = max(target_loss_b, loss_b + overfit_b + random.gauss(0, 0.015))
+        # SWA also helps val loss (better generalization)
+        if model_container["swa_enabled"] and len(swa_history_a) >= 3:
+            val_loss_a *= 0.95  # SWA generalizes better
+            val_loss_b *= 0.95
 
         # Accuracy metrics
         accuracy_a = min(0.98, max(0.1, 1.0 - loss_a * 0.4 + random.gauss(0, 0.008)))
@@ -179,6 +241,7 @@ def _golden_training(
                 "weight_decay": wd,
                 "weight_a": weight_a,
                 "weight_b": weight_b,
+                "swa_enabled": int(model_container["swa_enabled"]),
             },
             "hp": {
                 "lr": lr,

@@ -5,9 +5,9 @@ requires: []
 rules:
   - id: nan_guard
     condition: custom
-    metric: train_loss
+    metric: nan_detected
     params:
-      expression: "math.isnan(train_loss) or math.isinf(train_loss)"
+      expression: "nan_detected > 0"
     action:
       module: opt
       op: set_params
@@ -16,7 +16,7 @@ rules:
     confidence: critical
     priority: critical
     cooldown: 50
-    description: "Emergency LR cut on NaN/Inf loss"
+    description: "Emergency LR cut on NaN/Inf loss (triggered by nan_detected flag)"
 
   - id: grad_spike_clip
     condition: custom

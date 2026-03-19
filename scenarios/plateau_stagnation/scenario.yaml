@@ -1,0 +1,5 @@
+name: plateau_stagnation
+pack: plateau_recovery
+max_steps: 150
+expected_rules:
+  - plateau_recovery.stagnation_detect
